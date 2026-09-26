@@ -5,3 +5,7 @@ ra_cfg.txt
 
 /Debug/
 /makefile.targets
+.config.old
+Kconfig
+sconscript_update.bat
+.settings/.rtmenus
