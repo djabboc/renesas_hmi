@@ -1,4 +1,5 @@
-/workspace
+*.pyc
+/logs
 /workspace
 /RTE
 /Listings
