@@ -510,7 +510,7 @@ icu_instance_ctrl_t g_external_irq9_ctrl;
 const external_irq_cfg_t g_external_irq9_cfg =
 {
     .channel             = 9,
-    .trigger             = EXTERNAL_IRQ_TRIG_RISING,
+    .trigger             = EXTERNAL_IRQ_TRIG_FALLING,
     .filter_enable       = false,
     .pclk_div            = EXTERNAL_IRQ_PCLK_DIV_BY_64,
     .p_callback          = irq_callback,
