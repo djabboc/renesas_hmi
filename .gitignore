@@ -9,3 +9,5 @@ ra_cfg.txt
 Kconfig
 sconscript_update.bat
 .settings/.rtmenus
+.config
+.cproject
