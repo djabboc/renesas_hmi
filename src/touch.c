@@ -11,12 +11,15 @@
 #define GT911_REG_POINT0         0x814F
 #define GT911_MAX_POINTS         5
 #define GT911_POINT_SIZE         8
+
 #define GT911_INT_PIN            "p004"
 #define GT911_RST_PIN            "p801"
 
+static rt_base_t gt911_int_pin = PIN_NONE;
+static rt_base_t gt911_rst_pin = PIN_NONE;
+
 static struct rt_i2c_bus_device *gt911_bus;
 static struct rt_semaphore gt911_irq_sem;
-static rt_base_t gt911_int_pin = PIN_NONE;
 static rt_uint16_t gt911_addr;
 
 static rt_err_t gt911_read_regs(rt_uint16_t reg, rt_uint8_t *data, rt_uint16_t len)
@@ -130,26 +133,25 @@ static void gt911_read_touch_data(void)
 
 static void gt911_demo_thread(void *parameter)
 {
-    rt_base_t rst_pin;
     rt_uint8_t id[4];
     rt_err_t result;
 
     RT_UNUSED(parameter);
 
     gt911_int_pin = rt_pin_get(GT911_INT_PIN);
-    rst_pin = rt_pin_get(GT911_RST_PIN);
-    if ((gt911_int_pin < 0) || (rst_pin < 0))
+    gt911_rst_pin = rt_pin_get(GT911_RST_PIN);
+    if ((gt911_int_pin < 0) || (gt911_rst_pin < 0))
     {
         rt_kprintf("GT911: invalid INT/RST pin mapping\n");
         return;
     }
 
     rt_pin_mode(gt911_int_pin, PIN_MODE_OUTPUT);
-    rt_pin_mode(rst_pin, PIN_MODE_OUTPUT);
-    rt_pin_write(rst_pin, PIN_LOW);
+    rt_pin_mode(gt911_rst_pin, PIN_MODE_OUTPUT);
+    rt_pin_write(gt911_rst_pin, PIN_LOW);
     rt_pin_write(gt911_int_pin, PIN_HIGH);
     rt_thread_mdelay(10);
-    rt_pin_write(rst_pin, PIN_HIGH);
+    rt_pin_write(gt911_rst_pin, PIN_HIGH);
     rt_thread_mdelay(100);
     if (R_IOPORT_PinCfg(&g_ioport_ctrl, gt911_int_pin,
                         IOPORT_CFG_IRQ_ENABLE | IOPORT_CFG_PORT_DIRECTION_INPUT) != FSP_SUCCESS)
@@ -238,5 +240,4 @@ static int gt911_demo_start(void)
     return rt_thread_startup(thread);
 }
 
-// INIT_APP_EXPORT(gt911_demo_start);
-
+INIT_APP_EXPORT(gt911_demo_start);

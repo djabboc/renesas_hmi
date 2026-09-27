@@ -96,4 +96,4 @@ static int gt911_gpio_irq_start(void)
     return rt_thread_startup(thread);
 }
 
-INIT_APP_EXPORT(gt911_gpio_irq_start);
+// INIT_APP_EXPORT(gt911_gpio_irq_start);
