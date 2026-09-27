@@ -240,4 +240,4 @@ static int gt911_demo_start(void)
     return rt_thread_startup(thread);
 }
 
-INIT_APP_EXPORT(gt911_demo_start);
+// INIT_APP_EXPORT(gt911_demo_start);
