@@ -753,7 +753,7 @@ static int rwoo7_demo_start(void)
     rw_worker_ready = RT_TRUE;
     return RT_EOK;
 }
-INIT_APP_EXPORT(rwoo7_demo_start);
+// INIT_APP_EXPORT(rwoo7_demo_start);
 
 static void rw007_demo(int argc, char **argv)
 {
@@ -809,3 +809,29 @@ static void rw007_demo(int argc, char **argv)
     else rt_kprintf("RW007: test queued\n");
 }
 MSH_CMD_EXPORT(rw007_demo, Test RW007 firmware info WiFi scan BLE scan and advertising);
+
+/* Called synchronously only by the peripheral suite, never alongside rw_worker. */
+int test_rw007(const char *stage)
+{
+    rt_err_t result;
+    if (rw_worker_ready || rw_busy) return -RT_EBUSY;
+    if (strcmp(stage,"info") && strcmp(stage,"wifi") && strcmp(stage,"ble") && strcmp(stage,"adv")) return -RT_EINVAL;
+    rw_busy=RT_TRUE;
+    result=rw_prepare();
+    if (!result) {
+        if (!strcmp(stage,"info")) result=rw_info_test();
+        else if (!strcmp(stage,"wifi")) result=rw_wifi_test();
+        else if (!strcmp(stage,"ble")) result=rw_ble_test();
+        else {
+            result=rw_advertise_test();
+            if (!result) {
+                rt_tick_t start=rt_tick_get();
+                while ((rt_tick_t)(rt_tick_get()-start)<rt_tick_from_millisecond(15000)) {
+                    result=rw_receive();if(result) break;rt_thread_mdelay(10);
+                }
+                if (!result) result=1; /* phone discovery still needs acceptance */
+            }
+        }
+    }
+    rw_shutdown();rw_busy=RT_FALSE;return result;
+}

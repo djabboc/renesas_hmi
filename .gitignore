@@ -7,6 +7,9 @@
 !/doc/ble-capabilities.md
 !/doc/ble-sound.md
 !/doc/rwoo7-demo.md
+!/doc/peripheral-test-taskbook.md
+!/doc/peripheral-tests.md
+!/doc/peripheral-test-results.md
 /logs
 /workspace
 /RTE

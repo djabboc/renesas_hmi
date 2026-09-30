@@ -43,6 +43,9 @@
             [36] = sci_spi_eri_isr, /* SCI4 ERI (Receive error) */
             [37] = ether_eint_isr, /* EDMAC0 EINT (EDMAC 0 interrupt) */
             [38] = ssi_rxi_isr, /* SSI0 RXI (Receive data full) */
+            [40] = hmi_usb_isr,
+            [41] = rtc_alarm_periodic_isr,
+            [42] = rtc_carry_isr,
             [39] = ssi_int_isr, /* SSI0 INT (Error interrupt) */
         };
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_MAX_ENTRIES] =
@@ -86,6 +89,9 @@
             [36] = BSP_PRV_IELS_ENUM(EVENT_SCI4_ERI), /* SCI4 ERI (Receive error) */
             [37] = BSP_PRV_IELS_ENUM(EVENT_EDMAC0_EINT), /* EDMAC0 EINT (EDMAC 0 interrupt) */
             [38] = BSP_PRV_IELS_ENUM(EVENT_SSI0_RXI), /* SSI0 RXI (Receive data full) */
+            [40] = BSP_PRV_IELS_ENUM(EVENT_USBFS_INT),
+            [41] = BSP_PRV_IELS_ENUM(EVENT_RTC_ALARM),
+            [42] = BSP_PRV_IELS_ENUM(EVENT_RTC_CARRY),
             [39] = BSP_PRV_IELS_ENUM(EVENT_SSI0_INT), /* SSI0 INT (Error interrupt) */
         };
         #endif

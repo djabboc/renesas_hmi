@@ -5,5 +5,5 @@
             #ifdef VECTOR_NUMBER_DRW_INT
             #define DRW_CFG_INT_IRQ              (VECTOR_NUMBER_DRW_INT)
             #endif
-            #define DRW_CFG_CUSTOM_MALLOC        ((0))
+            #define DRW_CFG_CUSTOM_MALLOC        ((1))
 #endif /* R_DRW_CFG_H_ */

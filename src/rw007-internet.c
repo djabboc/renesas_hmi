@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Internet reachability check over the existing lwIP 2.1.2 raw API.
- * No extra initializer: called only by rwoo7-demo.c's worker.
+ * No extra initializer: called by the selected example's sole network owner.
  */
 #include "rw007-internet.h"
 #include "lwip/init.h"
@@ -61,8 +61,8 @@ static err_t internet_output(struct netif *netif, struct pbuf *p)
 
 static err_t internet_init(struct netif *netif)
 {
-    netif->name[0] = 'r'; netif->name[1] = 'w';
-    netif->hostname = "hmi-rw007";
+    netif->name[0] = 'h'; netif->name[1] = 'm';
+    netif->hostname = "hmi-board";
     netif->hwaddr_len = 6;
     rt_memcpy(netif->hwaddr, station_mac, 6);
     netif->mtu = 1500;
@@ -153,7 +153,7 @@ static err_t internet_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t
 static err_t internet_connected(void *arg, struct tcp_pcb *pcb, err_t error)
 {
     static const char request[] = "GET /connecttest.txt HTTP/1.1\r\n"
-        "Host: www.msftconnecttest.com\r\nUser-Agent: HMI-RW007\r\nConnection: close\r\n\r\n";
+        "Host: www.msftconnecttest.com\r\nUser-Agent: HMI-Board\r\nConnection: close\r\n\r\n";
     RT_UNUSED(arg);
     if (error != ERR_OK) { http_done = RT_TRUE; return error; }
     rt_kprintf("NET: TCP connected, requesting public connectivity endpoint\n");

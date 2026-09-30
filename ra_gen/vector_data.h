@@ -3,8 +3,14 @@
         #define VECTOR_DATA_H
                 /* Number of interrupts allocated */
         #ifndef VECTOR_DATA_IRQ_COUNT
-        #define VECTOR_DATA_IRQ_COUNT    (40)
+        #define VECTOR_DATA_IRQ_COUNT    (43)
         #endif
+        /* Test suite additions: USB FS, RTC alarm and carry. */
+        #define USBFS_INT_IRQn ((IRQn_Type)40)
+        #define USBHS_USB_INT_RESUME_IRQn ((IRQn_Type)-1)
+        void hmi_usb_isr(void);
+        void rtc_alarm_periodic_isr(void);
+        void rtc_carry_isr(void);
         /* ISR prototypes */
         void sci_uart_rxi_isr(void);
         void sci_uart_txi_isr(void);

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from configure_rw007_network import configure
+from configure_peripheral_tests import configure as configure_peripherals
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +45,7 @@ def main() -> int:
     args = parser.parse_args()
 
     configure(PROJECT_ROOT)
+    configure_peripherals(PROJECT_ROOT)
 
     image = PROJECT_ROOT / "Debug" / "rtthread.hex"
     studio = args.studio_root / "eclipsec.exe"
@@ -80,7 +82,7 @@ def main() -> int:
         assert process.stdout is not None
         for line in process.stdout:
             print(line, end="", flush=True)
-            summary = re.search(r"Build Finished\.\s+(\d+) errors", line)
+            summary = re.search(r"Build (?:Finished|Failed)\.\s+(\d+) errors", line)
             if summary:
                 build_errors = int(summary.group(1))
                 if build_errors:

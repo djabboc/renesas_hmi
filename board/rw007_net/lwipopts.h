@@ -1,4 +1,4 @@
-/* Dedicated lwIP raw-API configuration. Only the RW007 worker uses this stack. */
+/* Dedicated raw lwIP: one owner, selected RW007 worker or peripheral suite. */
 #ifndef HMI_RW007_LWIPOPTS_H
 #define HMI_RW007_LWIPOPTS_H
 #define NO_SYS 1
