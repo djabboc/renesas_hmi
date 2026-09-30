@@ -478,7 +478,7 @@ static int lcd_touch_lvgl_start(void)
     if (error != RT_EOK) rt_thread_delete(thread);
     return error;
 }
-INIT_APP_EXPORT(lcd_touch_lvgl_start);
+// INIT_APP_EXPORT(lcd_touch_lvgl_start);
 
 static void touch_lvgl_status(void)
 {
