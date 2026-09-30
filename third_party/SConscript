@@ -1,0 +1,11 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+src = []
+for directory, _, files in os.walk(os.path.join(cwd, 'lvgl', 'src')):
+    src.extend(os.path.join(directory, name) for name in files if name.endswith('.c'))
+
+group = DefineGroup('LVGL', src, depend=[''],
+                    CPPPATH=[cwd, os.path.join(cwd, 'lvgl')])
+Return('group')

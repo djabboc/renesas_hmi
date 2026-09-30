@@ -1,5 +1,6 @@
 *.pyc
 /doc/*
+!/doc/lcd-lvgl.md
 /logs
 /workspace
 /RTE
