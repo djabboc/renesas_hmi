@@ -2,6 +2,7 @@
 /doc/*
 !/doc/lcd-lvgl.md
 !/doc/lcd-touch.md
+!/doc/lcd-touch-lvgl.md
 /logs
 /workspace
 /RTE

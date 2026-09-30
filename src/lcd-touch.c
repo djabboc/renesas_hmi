@@ -395,7 +395,7 @@ static int lcd_touch_start(void)
     }
     return result;
 }
-INIT_APP_EXPORT(lcd_touch_start);
+// INIT_APP_EXPORT(lcd_touch_start);
 
 static void lcd_touch_status(void)
 {
