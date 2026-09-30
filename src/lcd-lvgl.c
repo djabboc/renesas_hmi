@@ -190,7 +190,7 @@ static int lcd_lvgl_start(void)
     if (err != RT_EOK) rt_thread_delete(thread);
     return err;
 }
-INIT_APP_EXPORT(lcd_lvgl_start);
+// INIT_APP_EXPORT(lcd_lvgl_start);
 
 static void lvgl_status(void)
 {
