@@ -40,6 +40,29 @@ static rt_uint16_t ble_init_result;
 static char ble_version[64];
 static rt_uint8_t ble_mac[6];
 static rt_bool_t ble_mac_valid;
+/* Transport probe only: observing a GATT property does not establish a UART path. */
+static volatile rt_uint32_t ble_rx_packets, ble_ble_packets, ble_other_packets;
+static volatile rt_uint32_t ble_probe_packets;
+
+static void ble_probe_packet(const rt_uint8_t *data, rt_uint32_t length, rt_uint32_t type)
+{
+    static const char marker[] = "HMI_PROBE1";
+    rt_uint32_t i;
+    ble_rx_packets++;
+    if (type == 7) ble_ble_packets++;
+    else if (type != 5) ble_other_packets++;
+    for (i = 0; i + sizeof(marker) - 1 <= length; i++)
+    {
+        if (rt_memcmp(data + i, marker, sizeof(marker) - 1) == 0)
+        {
+            ble_probe_packets++;
+            rt_kprintf("BLE: probe marker reached MCU, packet_type=%u bytes=%u\n", type, length);
+            break;
+        }
+    }
+    if (type != 5 && type != 7)
+        rt_kprintf("BLE: other module packet type=%u bytes=%u\n", type, length);
+}
 
 static rt_uint16_t ble_get16(const rt_uint8_t *p)
 {
@@ -190,6 +213,7 @@ static rt_err_t ble_parse(void)
     length = ble_get32(ble_rx);
     type = ble_get32(ble_rx + 4);
     if (length > (rt_uint32_t)(ble_rx_length - 8)) return -RT_EIO;
+    ble_probe_packet(data, length, type);
     if (type == 5) /* module command response */
     {
         rt_uint32_t command, size;
@@ -427,3 +451,11 @@ static void ble_status(void)
     if (ble_mac_valid) rt_kprintf("BLE: expected name RW007-%02X%02X (confirm in phone scan)\n", ble_mac[4], ble_mac[5]);
 }
 MSH_CMD_EXPORT(ble_status, Show RW007 BLE discovery demo status);
+
+static void ble_probe(void)
+{
+    rt_kprintf("BLE probe: packets=%u ble=%u other=%u marker_packets=%u\n",
+               ble_rx_packets, ble_ble_packets, ble_other_packets, ble_probe_packets);
+    rt_kprintf("BLE probe: phone write ASCII HMI_PROBE1 to FF01; marker detection is per SPI packet\n");
+}
+MSH_CMD_EXPORT(ble_probe, Show phone-to-MCU transport probe counters);

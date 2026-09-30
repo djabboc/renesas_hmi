@@ -4,6 +4,7 @@
 !/doc/lcd-touch.md
 !/doc/lcd-touch-lvgl.md
 !/doc/ble.md
+!/doc/ble-capabilities.md
 /logs
 /workspace
 /RTE

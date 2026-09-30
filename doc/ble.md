@@ -56,3 +56,5 @@ python scripts/monitor_msh.py --port COM8
 当前广播来自模块内置 BLE 配网服务。官方 README 明确写明外围模式目前仅支持微信小程序配网。手机看到 write/indicate 特性只证明模块提供对应 GATT 属性，不能证明任意数据会转交 RA6M3，或主控能够发送任意 indication。
 
 后续 `ble-remote.c` / `ble-uart.c` 必须先核实写入事件转发和服务端发送接口。本例程未实现遥控、UART 透传或 ECHO，也未向模块写入 Wi-Fi 凭据。
+
+后续已完成一次手机写入诊断：发送成功，但未观察到数据转交 RA6M3。诊断命令 `ble_probe`、固件能力及实测依据见 [RW007 固件能力与限制](ble-capabilities.md)。遥控和 ECHO 在当前固件接口条件下暂缓。
