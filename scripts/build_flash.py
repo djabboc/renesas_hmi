@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from configure_rw007_network import configure
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,8 @@ def main() -> int:
     parser.add_argument("--build-only", action="store_true", help="Build without flashing")
     args = parser.parse_args()
 
+    configure(PROJECT_ROOT)
+
     image = PROJECT_ROOT / "Debug" / "rtthread.hex"
     studio = args.studio_root / "eclipsec.exe"
     if not studio.is_file():
@@ -54,7 +57,7 @@ def main() -> int:
 
     print(f"Building {PROJECT_ROOT.name} with RT-Thread Studio", flush=True)
     with tempfile.TemporaryDirectory(prefix="rttstudio-headless-") as workspace:
-        subprocess.run(
+        process = subprocess.Popen(
             [
                 str(studio),
                 "-nosplash",
@@ -68,8 +71,23 @@ def main() -> int:
                 "project/Debug",
                 "-printErrorMarkers",
             ],
-            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
         )
+        build_errors = None
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            summary = re.search(r"Build Finished\.\s+(\d+) errors", line)
+            if summary:
+                build_errors = int(summary.group(1))
+                if build_errors:
+                    process.terminate()
+        exit_code = process.wait()
+        if exit_code or build_errors != 0:
+            raise RuntimeError(f"Build not verified: exit={exit_code}, summary errors={build_errors}; refusing to flash")
     if not image.is_file():
         raise FileNotFoundError(f"Build did not produce {image}")
     print(f"Build complete: {image}", flush=True)
@@ -90,6 +108,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+    except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1)

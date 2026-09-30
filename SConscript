@@ -17,7 +17,13 @@ elif rtconfig.PLATFORM in ['gcc', 'armclang']:
         CPPPATH = [cwd]
         src = Glob('./src/*.c')
 
+network_root = os.path.join(cwd, 'rt-thread/components/net/lwip/lwip-2.1.2/src')
+CPPPATH += [os.path.join(cwd, 'board/rw007_net'), os.path.join(network_root, 'include')]
 group = DefineGroup('Applications', src, depend = [''], CPPPATH = CPPPATH)
+network_src = Glob(os.path.join(network_root, 'core/*.c'))
+network_src += Glob(os.path.join(network_root, 'core/ipv4/*.c'))
+network_src += [os.path.join(network_root, 'netif/ethernet.c')]
+group += DefineGroup('RW007 internet lwIP', network_src, depend=[''], CPPPATH=CPPPATH)
 
 for d in list:
     path = os.path.join(cwd, d)

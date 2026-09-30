@@ -442,7 +442,7 @@ static int ble_start(void)
     if (result != RT_EOK) rt_thread_delete(thread);
     return result;
 }
-INIT_APP_EXPORT(ble_start);
+// INIT_APP_EXPORT(ble_start);
 
 static void ble_status(void)
 {
