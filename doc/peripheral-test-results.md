@@ -784,6 +784,56 @@ TEST IDLE
 
 下一项为 `hmi_test rw007-ble`：由开发板扫描周围 BLE 广播，检查报告及扫描结束事件。本次只更新验收文档，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：RW007 BLE 扫描（2026-10-01）
+
+用户执行独立 BLE 扫描例程，日志如下：
+
+```text
+msh >hmi_test rw007-ble
+TEST BEGIN rw007-ble
+msh >RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 00000000 00000000 flags=00
+RW007: command=0 result=0 bytes=0
+BLE: init queued without ACK; following operation must confirm support
+BLE: response=0x51 result=0 bytes=12
+BLE: public=FC:58:4A:A6:ED:30
+BLE[1]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[2]: 7B:09:11:6B:5D:86 type=1 RSSI=-63 name=<unnamed>
+BLE[3]: 7B:09:11:6B:5D:86 type=1 RSSI=-63 name=<unnamed>
+BLE[4]: 7B:09:11:6B:5D:86 type=1 RSSI=-61 name=<unnamed>
+BLE[5]: 7B:09:11:6B:5D:86 type=1 RSSI=-64 name=<unnamed>
+BLE[6]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[7]: B4:E7:B3:79:31:8B type=0 RSSI=-53 name=<unnamed>
+BLE[8]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[9]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[10]: B4:E7:B3:79:31:8B type=0 RSSI=-53 name=<unnamed>
+BLE[11]: 7B:09:11:6B:5D:86 type=1 RSSI=-63 name=<unnamed>
+BLE[12]: 7B:09:11:6B:5D:86 type=1 RSSI=-62 name=<unnamed>
+BLE[13]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[14]: B4:E7:B3:79:31:8B type=0 RSSI=-57 name=<unnamed>
+BLE[15]: 7B:09:11:6B:5D:86 type=1 RSSI=-63 name=<unnamed>
+BLE[16]: 7B:09:11:6B:5D:86 type=1 RSSI=-62 name=<unnamed>
+BLE[17]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[18]: 7B:09:11:6B:5D:86 type=1 RSSI=-65 name=<unnamed>
+BLE[19]: B4:E7:B3:79:31:8B type=0 RSSI=-55 name=<unnamed>
+BLE[20]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[21]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE[22]: 7B:09:11:6B:5D:86 type=1 RSSI=-59 name=<unnamed>
+BLE[23]: B4:E7:B3:79:31:8B type=0 RSSI=-55 name=<unnamed>
+BLE[24]: 7B:09:11:6B:5D:86 type=1 RSSI=-60 name=<unnamed>
+BLE: scan complete reason=0 reports=25
+TEST RESULT rw007-ble PASS code=0 elapsed=5169 ms
+TEST IDLE
+```
+
+结论：BLE 扫描验收通过，耗时 5169 ms。模块地址查询成功，扫描收到 25 条报告，并以 reason=0 正常结束。程序只打印前 24 条，因此日志最后编号为 24 与 reports=25 不矛盾。已打印记录含两个不同地址，重复报告不能计作新的设备，第 25 条未打印，不能断言总共恰好两个设备。
+
+本例程使用被动扫描，`name=<unnamed>` 表示当前报告中没有解析到名称，不代表扫描失败。初始化命令本身没有 ACK，但后续地址响应和实际扫描报告提供了 BLE 功能证据。启动时仍出现一次全 0 SPI 头，保留为尚未定位原因的异常，未据此否定已完成的扫描，也不宣称 SPI 零错误。
+
+下一项运行 `hmi_test rw007-adv`，手机 BLE 扫描页确认能发现 RW007-ED30。源码下发 60 秒广播参数，但测试线程只观察 15 秒即执行关闭；手机须提前开始扫描，在该窗口内确认。扫描接收通过不替代广播可发现性、连接或 GATT 数据功能验收。
+
+本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
