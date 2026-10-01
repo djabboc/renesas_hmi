@@ -33,6 +33,8 @@ extern void test_eth_mac_thread(void *argument);
 extern void test_eth_phy_thread(void *argument);
 extern void test_eth_phyloop_thread(void *argument);
 extern void test_gpio_inputs_thread(void *argument);
+extern void test_gpio_irq_both_thread(void *argument);
+extern void test_gpio_irq_rising_thread(void *argument);
 extern void test_gpio_keys_thread(void *argument);
 extern void test_gpio_led_thread(void *argument);
 extern void test_gpio_loop_thread(void *argument);
@@ -45,8 +47,6 @@ extern void test_lcd_touch_thread(void *argument);
 extern void test_lcd_touch_lvgl_thread(void *argument);
 extern void test_pmod_arduino_thread(void *argument);
 extern void test_pmod_i2c_thread(void *argument);
-extern void test_pmod_irq0_thread(void *argument);
-extern void test_pmod_irq1_thread(void *argument);
 extern void test_pmod_spi0_thread(void *argument);
 extern void test_pmod_spi1_thread(void *argument);
 extern void test_rtc_alarm_thread(void *argument);
@@ -89,6 +89,8 @@ static struct test_case test_cases[] = {
     {"eth-phy", test_eth_phy_thread, 0, 0},
     {"eth-phyloop", test_eth_phyloop_thread, 0, 0},
     {"gpio-inputs", test_gpio_inputs_thread, 0, 0},
+    {"gpio-irq-both", test_gpio_irq_both_thread, 0, 0},
+    {"gpio-irq-rising", test_gpio_irq_rising_thread, 0, 0},
     {"gpio-keys", test_gpio_keys_thread, 0, 0},
     {"gpio-led", test_gpio_led_thread, 0, 0},
     {"gpio-loop", test_gpio_loop_thread, 0, 0},
@@ -101,8 +103,6 @@ static struct test_case test_cases[] = {
     {"lcd-touch-lvgl", test_lcd_touch_lvgl_thread, 0, 0},
     {"pmod-arduino", test_pmod_arduino_thread, 0, 0},
     {"pmod-i2c", test_pmod_i2c_thread, 0, 0},
-    {"pmod-irq0", test_pmod_irq0_thread, 0, 0},
-    {"pmod-irq1", test_pmod_irq1_thread, 0, 0},
     {"pmod-spi0", test_pmod_spi0_thread, 0, 0},
     {"pmod-spi1", test_pmod_spi1_thread, 0, 0},
     {"rtc-alarm", test_rtc_alarm_thread, 0, 0},

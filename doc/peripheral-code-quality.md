@@ -77,8 +77,8 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 | `lcd-touch-lvgl` | 验证 GT911 触摸与 LVGL 控件联动。 | 色彩按钮、开关、滑块、RESET；滑块值实时变化，大预览松手更新；60 秒后退出。 |
 | `pmod-arduino` | 验证 Arduino SCI4 的 SPI 收发回环。 | D11/P512 接 D12/P511；1 MHz，比较八组 64 字节变化载荷。 |
 | `pmod-i2c` | 只读探测外部 I2C 夹具地址 0x50。 | 使用 I2C1，与 GT911 共用总线；夹具必须兼容当前地址单字节读；无响应返回 SKIP。 |
-| `pmod-irq0` | 验证 Pmod0 GPIO 到外部中断的回环。 | J1 pin8/P211 经 1 kΩ 接 pin7/P708；翻转 16 次，检查双边沿计数。 |
-| `pmod-irq1` | 验证 Pmod1 GPIO 到外部中断的回环。 | J2 pin8/P710 经 1 kΩ 接 pin7/P709；翻转 16 次，检查双边沿计数。 |
+| `gpio-irq-rising` | 验证 IRQ12 上升沿触发，下降沿不触发。 | P009 输出 → P008 输入；16 次翻转逐次校验，共 8 次中断；只恢复自身两脚配置。 |
+| `gpio-irq-both` | 验证 IRQ12 双边沿触发。 | P009 输出 → P008 输入；16 次翻转逐次校验，共 16 次中断；独立初始化与释放。 |
 | `pmod-spi0` | 验证 Pmod0 SCI6 的 SPI 收发回环。 | J1 pin2/P305 接 pin3/P304；1 MHz，比较八组 64 字节变化载荷。 |
 | `pmod-spi1` | 验证 Pmod1 SCI7 的 SPI 收发回环。 | J2 pin2/P613 接 pin3/P614；1 MHz，比较八组 64 字节变化载荷。 |
 | `rtc-alarm` | 验证 RTC 定时闹钟中断。 | 本次自行初始化日期，设置第 2 秒闹钟并要求只触发一次。 |

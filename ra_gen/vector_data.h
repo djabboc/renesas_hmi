@@ -3,9 +3,12 @@
         #define VECTOR_DATA_H
                 /* Number of interrupts allocated */
         #ifndef VECTOR_DATA_IRQ_COUNT
-        #define VECTOR_DATA_IRQ_COUNT    (43)
+        #define VECTOR_DATA_IRQ_COUNT    (44)
         #endif
-        /* Test suite additions: USB FS, RTC alarm and carry. */
+        /* Test suite additions: USB FS, RTC alarm/carry, GPIO IRQ12.
+         * IRQ12 instances are owned by the independent examples. Do not define
+         * VECTOR_NUMBER_ICU_IRQ12: drv_gpio uses that macro for generated instances. */
+        #define HMI_GPIO_IRQ12_IRQn ((IRQn_Type)43)
         #define USBFS_INT_IRQn ((IRQn_Type)40)
         #define USBHS_USB_INT_RESUME_IRQn ((IRQn_Type)-1)
         void hmi_usb_isr(void);

@@ -46,6 +46,7 @@
             [40] = hmi_usb_isr,
             [41] = rtc_alarm_periodic_isr,
             [42] = rtc_carry_isr,
+            [43] = r_icu_isr, /* P008 / IRQ12, GPIO interrupt examples */
             [39] = ssi_int_isr, /* SSI0 INT (Error interrupt) */
         };
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_MAX_ENTRIES] =
@@ -92,6 +93,7 @@
             [40] = BSP_PRV_IELS_ENUM(EVENT_USBFS_INT),
             [41] = BSP_PRV_IELS_ENUM(EVENT_RTC_ALARM),
             [42] = BSP_PRV_IELS_ENUM(EVENT_RTC_CARRY),
+            [43] = BSP_PRV_IELS_ENUM(EVENT_ICU_IRQ12),
             [39] = BSP_PRV_IELS_ENUM(EVENT_SSI0_INT), /* SSI0 INT (Error interrupt) */
         };
         #endif

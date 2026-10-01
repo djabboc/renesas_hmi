@@ -225,14 +225,16 @@ hmi_test rw007-adv
 | `hmi_test pmod-spi0` | Pmod0 J1 的 MOSI/P305（原理图 J1-3）→ MISO/P304（J1-5） | SCI6，1 MHz，8×64 字节回环 |
 | `hmi_test pmod-spi1` | Pmod1 J2 的 MOSI/P613（原理图 J2-3）→ MISO/P614（J2-5） | SCI7，同上 |
 | `hmi_test pmod-arduino` | Arduino D11/P512 → D12/P511 | SCI4，同上；D13/P204 为 SCK，D10/P712 为 CS |
-| `hmi_test pmod-irq0` | Pmod0 GPIO0/P211（原理图 J1-4）→ IRQ/P708（J1-2） | IRQ11，16 个双边沿中断 |
-| `hmi_test pmod-irq1` | Pmod1 GPIO0/P710（原理图 J2-4）→ IRQ/P709（J2-2） | IRQ10，同上 |
+| `hmi_test gpio-irq-rising` | Arduino D9/P009 输出 → D2/P008 输入 | IRQ12，16 次翻转产生 8 次上升沿中断；下降沿不触发 |
+| `hmi_test gpio-irq-both` | 同上，接线无需更换 | IRQ12，16 次翻转产生 16 次双边沿中断 |
 | `hmi_test pmod-i2c` | Arduino SCL/P202、SDA/P203 接 3.3 V I²C 设备，7 位地址 0x50，并共地/合适上拉 | 只读 1 字节应答；不校验该设备内容 |
 | `hmi_test adc-sample` | A0/P000，可先悬空观察 | 32 次转换、极值、均值，仅 WAIT |
 | `hmi_test adc-low` | A0/P000 接 GND | 所有读数 <100 |
 | `hmi_test adc-high` | A0/P000 接板上 3.3 V | 所有读数 >3995 |
 
-`pmod-irq0/irq1` 先检查 GPIO0 到 IRQ 的 0/1/0/1/0 电平连通性，再测试 16 次双边沿。成功条件为 `edges=16 expected=16 levels=16/16`。接线未通会打印 `wire FAIL`；电平匹配但中断计数不符则继续查 IRQ 配置。测试时会临时取消同通道其他候选引脚的 ISEL（irq0: P006/P501，irq1: P005），结束恢复原值。RA6M3 手册 20.2.5 规定同编号 IRQ 只能选择一个输入，默认按键 IRQ 与 Pmod 共用通道，不能同时选中。测试全过程避免调用会重新配置整张引脚表的 rt_pin_mode。
+`gpio-irq-rising`、`gpio-irq-both` 各自初始化和释放 IRQ12，可任意顺序、单独重复运行。移除原 Pmod IRQ 跳线，连接板上丝印 **P009 与 P008**；无外接模块时可直接用一根跳线。先检查 0/1/0/1/0 电平，再逐次检查 16 次翻转的中断数。成功时分别输出 `edges=8 expected=8`、`edges=16 expected=16`，且均有 `levels=16/16 edge_checks=16/16`。上升沿例程还验证下降沿未误触发。缺线返回 `wire FAIL`，停止请求和失败路径均关闭中断、恢复两脚原配置。
+
+这两项替代旧 `pmod-irq0/irq1` 命令，目标改为学习独立的外部中断，不再验证 Pmod 插座 IRQ 线路。P008/IRQ12 不与按键 P005/IRQ10、P006/IRQ11 共用通道；P009 只作 GPIO 输出，不启用它的 IRQ13。RA6M3 手册 20.2.5 要求同编号 IRQ 只能选择一个输入：IRQ12 的另一个候选脚 P502 默认用于 SD、ISEL=0，若运行时发现其 ISEL=1，例程直接报忙，绝不修改 P502。新例程不修改按键引脚；也不调用会重新配置整张引脚表的 rt_pin_mode。
 
 `pmod-spi0` 先执行低速接线诊断：P305 输出 0/1/0/1，P304 上拉输入读回，出现 `wire PASS` 后再切换 SCI6。若 `wire FAIL`，先核对插孔、跳线及接触；若已进入 SCI6，则根据 `open/start failed fsp=...`、`transfer error ... event=...`、`timeout` 或 `mismatch ... TX=... RX=...` 定位。只有最终 `8x64 bytes MATCH` 和 PASS 才代表 SPI 回环通过。该阶段诊断目前仅加入 Pmod0 例程。
 
@@ -249,7 +251,7 @@ hmi_test rw007-adv
 | 靠板边的一排 | IRQ / 2 | IO0 / 4 | IO1 / 6 | IO2 / 8 | GND / 10 | 3V3 / 12 |
 | 靠板内、MCU 的一排 | CS / 1 | MOSI / 3 | MISO / 5 | SCK / 7 | GND / 9 | 3V3 / 11 |
 
-IRQ 回环使用 GPIO0 与 IRQ：在已确认 SPI 回环孔位的同一个插座上，MOSI 正对另一排的孔是 IO0，CS 正对另一排的孔是 IRQ。将这两个相邻孔连接；不要直接把 MOSI/MISO 两端原位换排，否则连接的是 IO0/IO1。Pmod0 对应 P211/P708，Pmod1 对应 P710/P709。
+**旧 Pmod IRQ 接线参考（新 GPIO IRQ 例程不使用）：** GPIO0 与 IRQ：在已确认 SPI 回环孔位的同一个插座上，MOSI 正对另一排的孔是 IO0，CS 正对另一排的孔是 IRQ。将这两个相邻孔连接；不要直接把 MOSI/MISO 两端原位换排，否则连接的是 IO0/IO1。Pmod0 对应 P211/P708，Pmod1 对应 P710/P709。
 
 MOSI 与 MISO 在同一排，相邻。回环连接靠内排的第 2、3 列，即 P305/P304。方形焊盘是靠内排最左端的 J1-1/CS，作为计数起点。图中圆圈标的是 PCB 焊点，用于辨认位置；插座为弯脚结构，从板外正对插孔观察时视角改变，不能把本图左右、靠边/靠内直接当作插孔上下。不确定插孔对应关系时，断电后用通断档核对目标插孔与圈出的焊点。
 
