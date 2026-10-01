@@ -2,7 +2,35 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
-## SSD1306 外接 I²C 例程交付（2026-10-01，待屏幕验收）
+## SSD1306 外接 I²C 基础显示验收与动画优化（2026-10-01）
+
+用户反馈：固件 `e3b2152` 的显示“全部正常”，但移动动画刷新较慢，肉眼有明显残影；本次没有补充串口日志。记录为基础图案功能通过、动画流畅度需要改进，不将残影归因于已测量的面板响应时间。
+
+本轮优化只修改 `test-pmod-i2c.c`：
+
+- 从固定整屏传输改为按页比较新旧缓冲区，只写变化区间；未变化页零传输，旧像素也会被擦除。只在写入成功后更新副本，失败后强制下次全量刷新。
+- 移除每帧传输完成后固定 80 ms 等待，改为含绘图/传输在内的 33 ms 目标帧间隔。旧实现理论上限小于 12.5 fps，新实际帧率需读取日志，未声称已经达到 30 fps。
+- 保留边框、棋盘格与移动方块对照，增加两轴旋转、近大远小的立方体，远侧边为虚线；它是平面投影的纵深效果。增加 2 倍字号循环广告与反向追逐的跑马灯边框，消息跨尾部直接衔接开头。
+- 各动画输出实际帧率、平均数据字节数与平均/最长传输耗时；约 60 秒自然结束，字幕在 36 秒演示窗口持续循环，停止时也关闭显示。
+- 未修改共用 I²C 驱动时序、GT911、其他测试或 `hal_entry.c`。SSD1306 无整帧交换同步，缩短传输可减少撕裂窗口，但残影是否改善仍需用户验收。
+
+本轮自测：
+
+- Studio 构建 0 errors、0 warnings，见本机 `logs/ssd1306-animation-build.log`；17 项既有工具/结构回归通过，`git diff --check` 通过。验证完成后已通过 DAP-LINK/PyOCD 烧录并复位，见 `logs/ssd1306-animation-flash.log`。
+- `scripts/validate_oled_animation.py` 将实际例程和模拟 RT/I²C 一起编译为 ARM 程序，在 Unicorn 中执行；7 组逻辑验证通过：初始全刷/静止零传输、移动擦除与小范围更新、写失败后全刷恢复、取消不发送、旋转画面变化与传输一致、字幕像素位移与首尾循环、包边界和三种动画调度。结果见 `logs/ssd1306-animation-validation.log`。
+- 从执行结果提取两幅立方体和一幅广告帧，已检查标题、线框及文字像素布局。图像是代码生成的缓冲区预览，不是板上拍摄；见本机 `logs/oled-validation/preview.png`。
+- 模拟器只验证绘图/传输逻辑，不验证真实 I²C 时钟、面板刷新率、实测帧率或残影。本次未打开 COM8；接线不变，待用户执行同一命令提供三段统计和视觉结论。
+
+重跑逻辑验证（只使用本机日志目录安装测试依赖，不访问串口）：
+
+```text
+python -m pip install --target logs/oled-validation/python unicorn==2.1.4 pyelftools==0.33
+python scripts/validate_oled_animation.py --dependencies logs/oled-validation/python
+```
+
+脚本默认查找 Studio 10.2.1 ARM GCC，可用 `--compiler` 指定另一已安装路径；仿真使用软件浮点，板上构建仍使用工程自身的编译设置。
+
+以下保留基础版本交付记录；其中 50 帧、80 ms 和 `frames=52` 为旧版行为，新版以当前使用文档为准。
 
 用户没有原 0x50 夹具，提供 I²C SSD1306 128×64 OLED。`src/test/test-pmod-i2c.c` 已替换为独立显示例程，命令继续使用 `hmi_test pmod-i2c`；仍仅有一个线程入口，不包含命令行处理，不调用其他例程，无 LVGL 依赖。
 
@@ -1265,7 +1293,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
-| 待 OLED 验收 | `pmod-i2c`：已改为 SSD1306 128×64 图案/动画测试；原 0x50 无响应为旧实现记录 |
+| 基础显示通过，动画待复验 | `pmod-i2c`：用户确认 SSD1306 基本显示正常，反馈残影；变化区域刷新、立方体/循环字幕优化待复验 |
 | 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
