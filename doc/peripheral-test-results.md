@@ -877,6 +877,28 @@ TEST IDLE
 
 用户反馈底部找不到 Arduino A0。核对工程原有背面渲染图和 V3.1 原理图第 3 页后确认：本板实际丝印为 P000，对应 Arduino A0 / J6 第 1 脚。此前仅使用 Arduino 名称的指引不够直观，已在 `peripheral-tests.md` 补充接口方向、6 孔排母位置，以及 P000/GND 标注图 `docs/picture/adc-a0-connector.png`。图由原有 back.png 裁剪标注，已目视核对。此项只澄清接线，adc-low 仍待用户实测，未更改固件、未打开 COM8。
 
+### ADC 接地低端验收通过（2026-10-01）
+
+在 P000/A0 接板上 GND 的测试步骤后，用户分别执行基础采样和低端断言例程，提供以下日志（仅整理空行及行尾空白）：
+
+```text
+msh >hmi_test adc-sample
+TEST BEGIN adc-sample
+msh >ADC A0/P000 n=32 min=0 max=2 avg=0 approx_mV=0 (Vref assumed 3300mV)
+TEST RESULT adc-sample WAIT code=1 elapsed=9 ms
+TEST IDLE
+
+msh >hmi_test adc-low
+TEST BEGIN adc-low
+msh >ADC A0/P000 n=32 min=0 max=2 avg=0 approx_mV=0 (Vref assumed 3300mV)
+TEST RESULT adc-low PASS code=0 elapsed=9 ms
+TEST IDLE
+```
+
+结论：A0/P000 接地低端验收通过。两个独立例程各完成 32 次转换，读数均为 0～2，耗时各 9 ms；adc-low 的最大值 2 小于阈值 100。adc-sample 固定返回 WAIT，仅报告采样统计；本次低端 PASS 由 adc-low 的断言给出。均值和估算电压按整数运算显示为 0，不能据此认为每次转换都为 0，也不等于校准后的精度结论。
+
+下一步断电，先移除 P000 与 GND 的连接，再将 P000 接电源排母丝印 3.3V 的孔，上电执行 `hmi_test adc-high`。不可保留接地跳线同时接 3.3V，避免短接电源；不要误接 5V 或 VIN。高端要求所有读数大于 3995。本次只归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
