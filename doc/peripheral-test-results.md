@@ -382,6 +382,22 @@ TEST IDLE
 
 用户反馈“rtc-tick 超过 3 秒，等了 6 秒”。经源码核对，两个例程均先执行 `RTC_OSCILLATOR_SETTLE_MS=2200` 的固定晶振稳定等待，设置日期后再执行 `RTC_OBSERVATION_MS=3200` 的走时观察，另有驱动初始化及清理开销。总耗时 5513ms 符合当前实现，日期只前进约 3 秒也正确，不是 RTC 走慢。之前指导中的“约 3 秒”漏计初始化时间，已将使用手册修正为整条命令约 5.5～6 秒。本次仅更新说明和验收记录，未修改或烧录固件、未打开 COM8。
 
+## 用户逐项验收：G2D 内存绘图（2026-10-01）
+
+当前固件为 `5193620`，用户提供日志：
+
+```text
+msh >hmi_test graphics-g2d
+TEST BEGIN graphics-g2d
+G2D hardware red clear + green rectangle: corners=F800 center=07E0
+TEST RESULT graphics-g2d PASS code=0 elapsed=11 ms
+TEST IDLE
+```
+
+本项验收通过：D/AVE 2D 在独立的 16×16 RGB565 内存画布上填充红色背景和中央 8×8 绿色矩形，程序逐像素比较，日志摘要的 F800/07E0 分别对应红色/绿色，11ms 后正常退出。
+
+用户反馈“没有显示图像”。这符合例程设计：测试没有启动 GLCDC，也没有把小画布送入 LCD 帧缓冲；屏幕无图像不是本项故障。本项证明该绘图操作及像素结果，不代表 G2D 到 LCD 的联合显示链路已验收。下一项独立测试 JPEG 解码，同样在内存中校验。本次仅归档用户日志，未修改固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
