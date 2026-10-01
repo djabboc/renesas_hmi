@@ -536,7 +536,7 @@ TEST IDLE
 
 TF 卡本轮基础验收完成，覆盖卡信息、扇区重复读取、文件写入/重新挂载读回、无卡判断与空闲插回恢复。卡上保留 HMI00.TST、HMI01.TST 两个测试文件。未测试写入中拔卡、掉电恢复、全卡扫描或长期寿命。本次仅归档用户日志，助手未打开 COM8。
 
-## 用户逐项验收：系统 USB 枚举未完成（2026-10-01）
+## 用户逐项验收：系统 USB 枚举与 CDC 回显（2026-10-01）
 
 当前固件为 `e1bb9a3`。用户通过 Type-C 连接安卓手机后执行 `usb-probe`：
 
@@ -640,6 +640,46 @@ TEST IDLE
 用户观察到运行后 Windows 提示音，以及约 30 秒后再次提示音。这与枚举接入、回显窗口结束后例程主动断开 USB 的生命周期相符，不是连续掉线证据。此次也验证了此前 probe 退出后，echo 能重新枚举；尚未验证运行中的物理拔插、特殊二进制字节或跨包数据。下一步可在新的 echo 窗口用 HEX 模式发送 `00 01 7F 80 FE FF 0D 0A`，关闭自动追加换行及本地回显，核对原样返回。
 
 本次仅归档用户日志，未修改/烧录固件，未打开 COM8；文档经 `git diff --check` 检查。
+
+### USB CDC 特殊二进制字节回显验收通过（2026-10-01）
+
+用户再次运行 `usb-echo`，以 HEX 模式连续发送 5 组相同的 8 字节数据。电脑端原始收发记录：
+
+```text
+[18:36:02.981] TX> 00 01 7F 80 FE FF 0D 0A
+[18:36:02.993] RX> 00 01 7F 80 FE FF 0D 0A
+[18:36:03.596] TX> 00 01 7F 80 FE FF 0D 0A
+[18:36:03.605] RX> 00 01 7F 80 FE FF 0D 0A
+[18:36:04.175] TX> 00 01 7F 80 FE FF 0D 0A
+[18:36:04.183] RX> 00 01 7F 80 FE FF 0D 0A
+[18:36:04.669] TX> 00 01 7F 80 FE FF 0D 0A
+[18:36:04.676] RX> 00 01 7F 80 FE FF 0D 0A
+[18:36:05.091] TX> 00 01 7F 80 FE FF 0D 0A
+[18:36:05.102] RX> 00 01 7F 80 FE FF 0D 0A
+```
+
+板端日志（仅整理重复提示符、空行和粘贴产生的行尾转义痕迹）：
+
+```text
+msh >hmi_test usb-echo
+TEST BEGIN usb-echo
+msh >USB system connector VBUS=1; debug USB/COM8 is separate
+USB start: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB start: SYSSTS0=0001 INTSTS0=00C0 INTENB0=FD00 USBADDR=0000 NVIC=1
+USB start: irq=2 reset=0 setup=0 desc_device=0 desc_config=0
+USB waiting up to 15 seconds for host enumeration
+USB enumeration: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB enumeration: SYSSTS0=0001 INTSTS0=20B0 INTENB0=DD00 USBADDR=0002 NVIC=1
+USB enumeration: irq=48 reset=2 setup=13 desc_device=3 desc_config=4
+USB CDC configured, echo window 30s. Use the NEW COM port.
+USB mounted_events=1 rx=40 tx_queued=40 tx_complete_events=5
+TEST RESULT usb-echo WAIT code=1 elapsed=30342 ms
+TEST IDLE
+```
+
+结论：5 组收发逐字节一致，共 40 字节，与板端 rx=40、tx_queued=40、tx_complete_events=5 一致。NUL（00）、高位字节（80/FE/FF）及 CR/LF（0D/0A）均原样回显，未被字符串终止或换行处理截断/转换。本次特殊字节验收通过；板端 WAIT 仍按主机实际比对结果完成人工验收。
+
+目前 USB 基础枚举、文本及上述特殊二进制字节回显已通过，可以继续 RW007 独立例程验收。单次超过 64 字节的跨包传输、完整 0～255 字节集合、长时间压力、运行中拔插及安卓手机连接尚未验证，不据此宣称通过。无需为本次记录修改固件；未打开 COM8，文档使用 `git diff --check` 检查并提交。
 
 ## 构建与结构检查
 
