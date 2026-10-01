@@ -429,6 +429,30 @@ TEST IDLE
 
 内部回环不经过外部 XL2551 与接线，外部总线仍需 USB-CAN 或另一个正常工作的 CAN 节点配合 `can-bus` 验证。用户随后确认没有对端设备，外部收发暂缓并加入 `TODO.md`；已说明短接 CANH/CANL 不能代替回环。本次仅归档用户日志与测试条件，未修改固件、未打开 COM8。
 
+## 用户逐项验收：TF 卡检测问题（2026-10-01）
+
+用户确认有 TF 卡后，运行当前固件 `5193620` 的信息和只读测试，两项均在检测阶段跳过：
+
+```text
+msh >hmi_test sd-info
+TEST BEGIN sd-info
+SD card_inserted=0
+TEST RESULT sd-info SKIP code=2 elapsed=5 ms
+TEST IDLE
+
+msh >hmi_test sd-read
+TEST BEGIN sd-read
+SD card_inserted=0
+TEST RESULT sd-read SKIP code=2 elapsed=4 ms
+TEST IDLE
+```
+
+两项均未进入介质初始化和数据读取，不能根据这些结果判断卡容量或文件系统格式。核对 V3.1 原理图 SD Card/PinMap 页及 RA6M3 引脚表后，发现卡座 CD 连接 P405 普通 GPIO，而生成配置 `g_sdmmc1_cfg.card_detect` 选择了 `SDMMC_CARD_DETECT_CD`；旧例程直接读取 SDHI 专用检测输入，与实物连接不匹配。旧日志的 SKIP 不能作为实物确实无卡的证据。
+
+修复三个独立文件 `test-sd-info.c`、`test-sd-read.c`、`test-sd-file.c`：各自配置 P500～P505 的 SDHI1 总线功能、P405 上拉输入，读取低有效卡检测信号；禁用未接线的 SDHI 专用 CD 检测，仍以实际 GPIO 判定是否插卡。读/写传输等待、FatFs 状态和同步时继续检查 GPIO；退出恢复引脚。增加打开控制器和介质初始化的错误码，便于区分后续失败阶段。例程之间仍无调用依赖，不添加公共测试头，不格式化卡。
+
+修复版构建 0 错误、0 警告，17 项主机回归通过，DAP-LINK 烧录完成，记录见 `logs/sd-card-detect-fix-build.log`。修复后的插卡检测、介质初始化和扇区读取待用户复验；文件写入阶段尚未验收。本次助手未打开 COM8、未执行卡写入。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
