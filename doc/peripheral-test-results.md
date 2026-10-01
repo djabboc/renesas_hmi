@@ -736,6 +736,54 @@ TEST IDLE
 
 下一步保持热点和手机移动数据开启，使用 `hmi_test rw007-internet <ssid> <password>` 验证热点关联、DHCP、DNS、TCP 和 HTTP 正文匹配。当前扫描已能发现目标热点，但此前重构版联网因未发现热点而失败的记录，仍需新的联网结果才能关闭。本次只归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：RW007 热点联网（2026-10-01）
+
+用户保持 2.4 GHz 热点 Hotspot 与手机移动数据开启，执行独立联网例程。日志如下，命令中的密码替换为占位符，不将凭据保存到仓库：
+
+```text
+msh >hmi_test rw007-internet Hotspot <password>
+TEST BEGIN rw007-internet
+msh >RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 00000000 00000000 flags=00
+RW007: command=0 result=0 bytes=0
+RW007: command=1 result=0 bytes=0
+RW007: command=6 result=0 bytes=0
+WIFI[1]: SSID=Hotspot channel=11 RSSI=-50 security=0x00400004
+WIFI[2]: SSID=iTV-YaMp channel=8 RSSI=-79 security=0x00400006
+WIFI[3]: SSID=<hidden> channel=6 RSSI=-79 security=0x00400004
+WIFI[4]: SSID=ChinaNet-YaMp channel=8 RSSI=-79 security=0x00400006
+WIFI[5]: SSID=<hidden> channel=9 RSSI=-79 security=0x00400006
+WIFI[6]: SSID=华为 channel=6 RSSI=-80 security=0x00400004
+WIFI[7]: SSID=ChinaNet-0916 channel=6 RSSI=-84 security=0x00400004
+WIFI[8]: SSID=SCQD channel=5 RSSI=-85 security=0x00400004
+WIFI[9]: SSID=CU_K5nC channel=1 RSSI=-85 security=0x00400004
+WIFI[10]: SSID=<hidden> channel=5 RSSI=-86 security=0x00400004
+WIFI[11]: SSID=TP-LINK_D988 channel=1 RSSI=-88 security=0x00400004
+WIFI[12]: SSID=MERCURY_3A98 channel=1 RSSI=-89 security=0x00400006
+WIFI: scan complete result=0 reports=12
+RW007: command=2 result=0 bytes=6
+NET: joining SSID=Hotspot
+RW007: command=7 result=0 bytes=0
+WIFI: event=1 result=0 bytes=0
+NET: hotspot associated
+NET: waiting for DHCP
+NET: IP=192.168.249.97
+NET: gateway=192.168.249.115
+NET: DNS=192.168.249.115
+NET: www.msftconnecttest.com=23.206.188.213
+NET: TCP connected, requesting public connectivity endpoint
+NET: HTTP status=200 received=187 expected_body=MATCH
+NET: tx=15 rx=16 drops=0; INTERNET PASS result=0
+TEST RESULT rw007-internet PASS code=0 elapsed=7756 ms
+TEST IDLE
+```
+
+结论：重构后的独立 Wi-Fi 联网例程验收通过，耗时 7756 ms。成功关联热点，取得 DHCP 地址、网关及 DNS，解析公网域名、建立 TCP 连接，收到 HTTP 200 且正文匹配。网络统计 tx=15、rx=16、drops=0，正常退出回到 TEST IDLE。此前因未发现 Hotspot 导致的联网待复测项，本次关闭；保留原失败记录作为环境条件不足时的历史证据。
+
+启动时仍有一次全 0 SPI 头异常，后续通信恢复。网络层 drops=0 不代表底层 SPI 从未出错，也不证明长期连接稳定性；本项未覆盖 HTTPS、吞吐量或断网重连。
+
+下一项为 `hmi_test rw007-ble`：由开发板扫描周围 BLE 广播，检查报告及扫描结束事件。本次只更新验收文档，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -782,7 +830,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
 | 未执行外接条件验证 | `can-bus`、`gpio-loop`、`pmod-spi0/spi1/arduino/irq0/irq1`、`adc-low/high`：缺少已确认的对端、跳线或已知电压 |
-| 需重测 | `rw007-internet`：本轮接收运行时凭据并完成扫描，但未发现用户热点 `Hotspot`，返回 `FAIL code=-1` 并清理退出；不声明重构版 Wi-Fi 联网通过。此前联网验收保留在历史记录中 |
+| 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
 
