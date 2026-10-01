@@ -134,7 +134,7 @@ hmi_test usb-probe
 hmi_test usb-echo
 ```
 
-`probe` 等待枚举最多 5 秒。`echo` 在枚举后提供 30 秒回显窗口，原样回显收到的字节，不进行换行转换。设备输出 RX/排队 TX/发送完成事件统计；最终接收正确性由电脑比对，设备侧返回 WAIT。
+`probe` 和 `echo` 等待枚举最多 15 秒。`echo` 在枚举后提供 30 秒回显窗口，原样回显收到的字节，不进行换行转换。设备输出 RX/排队 TX/发送完成事件统计；最终接收正确性由电脑比对，设备侧返回 WAIT。
 
 知道新串口号后可使用自动主机比对，例如新端口为 COM12：
 
@@ -143,6 +143,16 @@ python scripts/test_peripherals.py --command "hmi_test usb-echo" --usb-port COM1
 ```
 
 工具发送全部 0～255 字节及跨包数据，包含 NUL、FF 和 CR/LF，并逐字节比较回显。`--port COM8` 是控制口，`--usb-port` 必须是系统 USB 新端口。重复拔插后重新执行。测试结束设备断开 CDC 并关闭 USBFS。
+
+枚举失败时保留完整 `USB start` / `USB enumeration` 日志：
+
+- `VBUS_pin` 是 P407 电平，`VBSTS` 是 USB 控制器检测值；两者均不能证明 D+/D− 通信正常。
+- `DPRPU=1` 表示 D+ 上拉已打开；`UCK=40` 对应本工程 PLL 240 MHz 除以 5，预期 USB 时钟为 48 MHz。
+- `irq` 是 USB 中断进入次数；`reset` 是控制器上报的总线复位次数；`setup` 是收到的控制请求次数。
+- `desc_device` / `desc_config` 是协议栈调用描述符回调的次数，不等于主机已成功接收；仅 `mounted_events>0` 表示完成配置。
+- 未收到 reset/setup 时继续查连接、上拉、时钟和中断；有请求但未配置时结合描述符计数和电脑设备状态排查。不能只凭一个计数断定线材损坏。
+
+电脑测试：将 A-to-C 数据线接系统 Con4，保留调试口连接，执行 `hmi_test usb-probe` 并等到 `TEST IDLE`。枚举成功可能立即退出并断开 CDC，因此新串口不一定持续显示；需要持续收发时使用 `usb-echo`。手机显示充电只说明供电相关状态，设置搜索“OTG未安装”也不足以判断手机是否支持 USB 主机模式。
 
 描述符使用示例 VID/PID `CAFE:4001`，仅作本板开发测试。USBFS IRQ 40、P407 VBUS 和 48 MHz USB 时钟属于接入要求。
 

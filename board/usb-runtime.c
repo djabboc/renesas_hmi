@@ -10,6 +10,26 @@ static uint8_t const *(*configuration_callback)(uint8_t);
 static uint16_t const *(*string_callback)(uint8_t, uint16_t);
 static void (*mount_callback)(void);
 static void (*sent_callback)(uint8_t);
+static void (*usb_irq_observer)(void);
+static void (*usb_event_observer)(uint32_t);
+
+/* 只转发诊断通知；计数属于当前例程。注册和注销均在 USB 中断关闭时进行。 */
+void hmi_usb_set_observers(void (*irq)(void), void (*event)(uint32_t))
+{
+    usb_irq_observer = irq;
+    usb_event_observer = event;
+}
+
+/* TinyUSB 可在中断中调用此钩子，因此观察函数只能做简短的计数操作。 */
+void tud_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr)
+{
+    RT_UNUSED(rhport);
+    RT_UNUSED(in_isr);
+    if (usb_event_observer != NULL)
+    {
+        usb_event_observer(eventid);
+    }
+}
 void hmi_usb_set_callbacks(uint8_t const *(*device)(void),
                            uint8_t const *(*configuration)(uint8_t),
                            uint16_t const *(*string)(uint8_t, uint16_t),
@@ -63,7 +83,13 @@ void tud_cdc_tx_complete_cb(uint8_t instance)
 void hmi_usb_isr(void)
 {
     rt_interrupt_enter();
-    dcd_int_handler(0);
+    /* 与 FSP USB ISR 一致，先清 ICU 请求，再处理 USB 外设状态。
+     * 避免在处理末尾清掉处理期间新到达的中断请求。 */
     R_BSP_IrqStatusClear(USBFS_INT_IRQn);
+    if (usb_irq_observer != NULL)
+    {
+        usb_irq_observer();
+    }
+    dcd_int_handler(0);
     rt_interrupt_leave();
 }

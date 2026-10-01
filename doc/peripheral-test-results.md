@@ -553,6 +553,32 @@ TEST IDLE
 
 只读检查确认：V3.1 系统 Type-C 的 CC1/CC2 各有 5.1kΩ 下拉，D+/D− 接至 MCU；工程配置 USB 时钟为 PLL 240MHz/5=48MHz，USBFS 中断使用向量 40，应用配置 P407 为 VBUS 功能，TinyUSB 配置 CDC 设备。尚未发现可直接归因的配置错误；这些静态检查不能代替实际枚举，也未证明手机、线材或固件任一方一定正常。下一步确认手机 OTG/主机模式及数据线，必要时改用电脑作对照。本次仅归档与检查，未修改固件、未打开 COM8。
 
+
+### 电脑 A-to-C 对照与诊断版本（2026-10-01）
+
+用户补充：安卓手机始终解锁，显示充电标志；设置搜索显示“OTG未安装”，无其他 USB 提示。随后改用 A-to-C 数据线连接电脑，仍得到：
+
+```text
+msh >hmi_test usb-probe
+TEST BEGIN usb-probe
+msh >USB system connector VBUS=1; debug USB/COM8 is separate
+USB mounted_events=0 rx=0 tx_queued=0 tx_complete_events=0
+TEST RESULT usb-probe SKIP code=2 elapsed=5013 ms
+TEST IDLE
+```
+
+结论：手机和电脑均未完成枚举，不能只归因于手机 OTG。充电标志不能证明数据通路正常，SKIP 不作为验收通过。原理图 PDF 第 3 页进一步确认 P407 经 R68/R69 分压检测 VCC_USB_SYS，USB_D_P/N 接 MCU 专用 USB_DP/DM 引脚；第 8 页确认系统连接器 Con4 的 CC 下拉和数据线。时钟配置的静态检查尚不能替代运行时检查。
+
+本次修改：
+
+1. `board/usb-runtime.c` 按 FSP v3.5.0 官方 `usbfs_interrupt_handler` 顺序，先清 ICU 中断请求再进入 TinyUSB 处理，避免处理末尾清掉期间新产生的请求。此处为中断顺序修正，尚未证明是本次失败的根因。
+2. `usb-probe`、`usb-echo` 分别在各自 C 文件内维护 IRQ、总线复位、SETUP 和描述符请求计数；适配层仅转发回调，中断内不打印日志。
+3. 枚举窗口从 5 秒调整为 15 秒；开始及枚举结束时打印 VBUS GPIO、VBSTS、DPRPU、时钟分频和 USB 状态寄存器。未完成枚举继续返回 SKIP，不伪报 PASS。
+
+验证：最终 RT-Thread Studio 构建 0 错误、0 警告；DAP-LINK 烧录成功并复位，记录见 `logs/usb-enumeration-diagnostics-build.log`。17 项主机工具/架构检查通过，`git diff --check` 通过；这些检查不等于 USB 实机枚举通过。
+
+官方中断顺序参考：https://github.com/renesas/fsp/blob/v3.5.0/ra/fsp/src/r_usb_basic/src/hw/r_usb_mcu.c 。下一步在电脑连接条件下重跑 `hmi_test usb-probe`，保留新增诊断行。USB 枚举与 ECHO 的板上验收仍未完成；本轮未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。

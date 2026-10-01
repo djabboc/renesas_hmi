@@ -3,7 +3,7 @@
  * @file test-usb-probe.c
  * @brief 验证系统 USBFS 的 CDC 枚举。
  *
- * Con4 用数据线连接电脑；等待最多 5 秒；调试口 COM8 与系统 USB 独立。
+ * Con4 用数据线连接电脑；等待最多 15 秒；调试口 COM8 与系统 USB 独立。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
  * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
  */
@@ -62,11 +62,59 @@ extern void hmi_usb_set_callbacks(uint8_t const *(*device)(void),
                                   void (*mounted)(void),
                                   void (*sent)(uint8_t));
 
+extern void hmi_usb_set_observers(void (*irq)(void), void (*event)(uint32_t));
+
 #define USB_ROOT_PORT 0u
-#define USB_MOUNT_TIMEOUT_MS 5000u
+#define USB_MOUNT_TIMEOUT_MS 15000u
 
 static volatile unsigned mount_count;
 static volatile unsigned tx_completion_count;
+static volatile unsigned irq_count;
+static volatile unsigned reset_count;
+static volatile unsigned setup_count;
+static unsigned device_request_count;
+static unsigned configuration_request_count;
+
+/* 中断/事件回调只计数；串口输出放在线程内，避免拖慢枚举时序。 */
+static void app_usb_irq(void)
+{
+    ++irq_count;
+}
+
+static void app_usb_event(uint32_t event)
+{
+    if (event == DCD_EVENT_BUS_RESET)
+    {
+        ++reset_count;
+    }
+    else if (event == DCD_EVENT_SETUP_RECEIVED)
+    {
+        ++setup_count;
+    }
+}
+
+/* 在停模块时钟前读取寄存器。GPIO 高电平与 USB 控制器的 VBSTS 分开记录。
+ * DPRPU=1 表示已打开 D+ 上拉；reset/setup 用于确认主机是否开始枚举。 */
+static void print_usb_diagnostics(const char *phase)
+{
+    rt_kprintf("USB %s: VBUS_pin=%u VBSTS=%u DPRPU=%u UCK=%02X SYSCFG=%04X\n",
+               phase,
+               (unsigned)rt_pin_read(BSP_IO_PORT_04_PIN_07),
+               (unsigned)R_USB_FS0->INTSTS0_b.VBSTS,
+               (unsigned)R_USB_FS0->SYSCFG_b.DPRPU,
+               (unsigned)R_SYSTEM->SCKDIVCR2,
+               (unsigned)R_USB_FS0->SYSCFG);
+    rt_kprintf("USB %s: SYSSTS0=%04X INTSTS0=%04X INTENB0=%04X USBADDR=%04X NVIC=%u\n",
+               phase,
+               (unsigned)R_USB_FS0->SYSSTS0,
+               (unsigned)R_USB_FS0->INTSTS0,
+               (unsigned)R_USB_FS0->INTENB0,
+               (unsigned)R_USB_FS0->USBADDR,
+               (unsigned)NVIC_GetEnableIRQ(USBFS_INT_IRQn));
+    rt_kprintf("USB %s: irq=%u reset=%u setup=%u desc_device=%u desc_config=%u\n",
+               phase, irq_count, reset_count, setup_count,
+               device_request_count, configuration_request_count);
+}
 
 /* CAFE:4001 仅为开发测试标识；CDC 使用两个接口和三个端点。 */
 static const tusb_desc_device_t device_descriptor = {.bLength = sizeof(tusb_desc_device_t),
@@ -89,6 +137,7 @@ static const uint8_t config_descriptor[] = {
 /* 返回本文件的 USB 设备描述符，生命周期覆盖枚举全过程。 */
 static uint8_t const *app_tud_descriptor_device_cb(void)
 {
+    ++device_request_count;
     return (const uint8_t *)&device_descriptor;
 }
 
@@ -96,6 +145,7 @@ static uint8_t const *app_tud_descriptor_device_cb(void)
 static uint8_t const *app_tud_descriptor_configuration_cb(uint8_t index)
 {
     RT_UNUSED(index);
+    ++configuration_request_count;
     return config_descriptor;
 }
 
@@ -179,6 +229,12 @@ static int run_test(void)
     R_BSP_MODULE_START(FSP_IP_USBFS, 0);
     R_BSP_RegisterProtectEnable(BSP_REG_PROTECT_OM_LPC_BATT);
     R_BSP_IrqCfg(USBFS_INT_IRQn, 12, NULL);
+    irq_count = 0;
+    reset_count = 0;
+    setup_count = 0;
+    device_request_count = 0;
+    configuration_request_count = 0;
+    hmi_usb_set_observers(app_usb_irq, app_usb_event);
     mount_count = 0;
     tx_completion_count = 0;
     hmi_usb_set_callbacks(app_tud_descriptor_device_cb,
@@ -191,7 +247,14 @@ static int run_test(void)
         result = -RT_ERROR;
         goto close_usb;
     }
+    print_usb_diagnostics("start");
+    rt_kprintf("USB waiting up to 15 seconds for host enumeration\n");
     result = wait_for_usb_mount();
+    print_usb_diagnostics("enumeration");
+    if (result == TEST_SKIP && !test_cancelled())
+    {
+        rt_kprintf("USB enumeration incomplete; capture diagnostics above (SKIP is not PASS)\n");
+    }
 
     rt_kprintf("USB mounted_events=%u rx=%u tx_queued=%u tx_complete_events=%u\n",
                mount_count,
@@ -205,6 +268,7 @@ close_usb:
     NVIC_ClearPendingIRQ(USBFS_INT_IRQn);
     R_BSP_MODULE_STOP(FSP_IP_USBFS, 0);
     hmi_usb_set_callbacks(NULL, NULL, NULL, NULL, NULL);
+    hmi_usb_set_observers(NULL, NULL);
     test_restore_pin(BSP_IO_PORT_04_PIN_07);
     return result;
 }
