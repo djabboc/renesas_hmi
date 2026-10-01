@@ -1133,6 +1133,33 @@ IRQ1（P710 输出 → P709 输入，IRQ10）本次未通过接线检查：输�
 
 下一步断电，把 IRQ/IO0 跳线从已通过 IRQ0 的插座移到另一个插座相同方向、同排同列的对应两孔（即先前通过 pmod-spi1 的接口），确认仅连接 IRQ 与 IO0 后上电执行 `hmi_test pmod-irq1`。预期 wire PASS、edges=16、levels=16/16。此次仅归档用户日志和更新验收状态，未修改或烧录固件、未打开 COM8；文档经 `git diff --check` 检查后提交。
 
+### Pmod IRQ1 修复复验通过与修改范围确认（2026-10-01）
+
+用户提供新的 IRQ1 测试日志：
+
+```text
+msh >hmi_test pmod-irq1
+TEST BEGIN pmod-irq1
+msh >PMOD irq1 IRQ10 peer pin=0005 ISEL=1->0
+PMOD irq1 GPIO0 pin=070A -> IRQ pin=0709, channel=10
+PMOD irq1 wire set=0 output=0 input=0
+PMOD irq1 wire set=1 output=1 input=1
+PMOD irq1 wire set=0 output=0 input=0
+PMOD irq1 wire set=1 output=1 input=1
+PMOD irq1 wire set=0 output=0 input=0
+PMOD irq1 wire PASS
+PMOD irq1 IRQCR=32 NVIC=1 ISEL=1; BOTH_EDGE
+PMOD irq1 GPIO->IRQ edges=16 expected=16 levels=16/16
+TEST RESULT pmod-irq1 PASS code=0 elapsed=209 ms
+TEST IDLE
+```
+
+结论：Pmod IRQ1（P710 输出 → P709 输入，IRQ10）修复复验通过。五步接线检查正确，16 次电平读回与 16 个双边沿计数均匹配，耗时 209 ms。结合此前 IRQ0 的 212 ms PASS，两路 Pmod 外部中断回环均完成验收，关闭 IRQ1 接线待复测项。
+
+用户询问是否修改了其他用例代码。核对 Git 提交 `6d80e4b`，该次修复只改了两个 C 文件：`src/test/test-pmod-irq0.c`、`src/test/test-pmod-irq1.c`，以及 `doc/peripheral-tests.md`、本结果文档。两例程均存在同编号 IRQ 输入重复选择的问题，所以同步修复。未修改按键、SD、SPI 等其他例程代码，未修改公共 GPIO/ICU 驱动、FSP 生成配置、test-main 或 hal_entry。
+
+运行期影响与代码修改范围需区分：irq0 临时清除 P006/P501 的 IRQ 选择位，irq1 临时清除 P005 的 IRQ 选择位；例程保存进入前的实际引脚配置并在正常、失败、取消退出路径恢复。此次日志验证了各路连通性和边沿计数，并非对所有恢复路径、其他外设功能的再次完整验收。本轮仅归档日志和说明修改范围，没有再次修改或烧录固件、没有打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -1178,7 +1205,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未完成外接条件验证 | `can-bus` 待对端；`pmod-irq1` 修复后接线检查失败，待移线复测。`pmod-irq0` 已在 2026-10-01 复验通过：edges=16、levels=16/16、212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
+| 外接回环验收状态 | `can-bus` 仍待对端；`pmod-irq0/irq1` 均已复验通过，edges=16、levels=16/16，分别 212/209 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
