@@ -214,7 +214,33 @@ TEST IDLE
 
 修复仅位于独立例程 `test-touch-irq.c`：复位后明确设置 P004 为输入并使能 IRQ；复制 IRQ9 配置，显式选择下降沿及本例回调，通过 FSP 打开、使能、关闭 ICU；回调仍只计数。线程继续轮询坐标用于对照，有触点且有 IRQ 才返回 PASS，有触点却无 IRQ 返回 FAIL，无触点保留 WAIT。此判定不证明逐帧中断驱动或位置精度。
 
-修复版 RT-Thread Studio 构建 0 错误、0 警告，DAP-LINK 烧录完成；17 项主机回归通过，构建与烧录日志为 `logs/touch-irq-fix-build.log`。修复后的真实触摸中断计数仍待用户复验；本次未打开 COM8，不将代码检查或构建结果替代硬件验收。
+修复版 RT-Thread Studio 构建 0 错误、0 警告，DAP-LINK 烧录完成；17 项主机回归通过，构建与烧录日志为 `logs/touch-irq-fix-build.log`。修复后的真实触摸中断已由下方用户复验确认；助手未打开 COM8。
+
+### 触摸中断修复复验通过
+
+用户在固件 `5193620` 上重新运行 `hmi_test touch-irq`，记录到 78 次下降沿中断，返回 PASS，15139ms 后正常进入 TEST IDLE。关键日志节选如下（省略重复帧与中间轨迹，各段不表示连续采样）：
+
+```text
+msh >hmi_test touch-irq
+TEST BEGIN touch-irq
+TOUCH addr=14 id=911 range=480x272
+TOUCH P004/IRQ9 falling-edge enabled; touch within 15 seconds
+TOUCH N=1 id=0 (134,145)
+TOUCH N=1 id=0 (222,118)
+TOUCH N=1 id=0 (211,135)
+TOUCH N=0
+TOUCH N=2 id=0 (316,104) id=1 (195,118)
+TOUCH N=0
+TOUCH N=1 id=0 (122,155)
+TOUCH N=1 id=0 (288,140)
+TOUCH N=0
+TOUCH observed_points=50; position/multitouch accuracy requires interaction
+TOUCH falling-edge IRQ count=78; touch the panel to generate edges
+TEST RESULT touch-irq PASS code=0 elapsed=15139 ms
+TEST IDLE
+```
+
+结论：本例 P004/IRQ9 中断链路复验通过，先前 IRQ=0 的问题已闭环；同时观察到单指滑动、双指和松手上报。`observed_points=50` 是读到的各帧触点数量累计，IRQ=78 是下降沿次数，两者统计对象不同，不要求相等。本项仍使用线程轮询读取作为对照，不据此宣称逐帧中断唤醒或触摸位置精度已验收；下一项通过无 LVGL 画板检查实际位置和绘图体验。
 
 ## 构建与结构检查
 
