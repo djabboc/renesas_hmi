@@ -899,6 +899,24 @@ TEST IDLE
 
 下一步断电，先移除 P000 与 GND 的连接，再将 P000 接电源排母丝印 3.3V 的孔，上电执行 `hmi_test adc-high`。不可保留接地跳线同时接 3.3V，避免短接电源；不要误接 5V 或 VIN。高端要求所有读数大于 3995。本次只归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+### ADC 3.3 V 高端验收通过（2026-10-01）
+
+在 P000/A0 改接板上 3.3 V 的测试步骤后，用户提供以下日志：
+
+```text
+msh >hmi_test adc-high
+TEST BEGIN adc-high
+msh >ADC A0/P000 n=32 min=4081 max=4092 avg=4086 approx_mV=3292 (Vref assumed 3300mV)
+TEST RESULT adc-high PASS code=0 elapsed=11 ms
+TEST IDLE
+```
+
+结论：A0/P000 高端验收通过，32 次转换的最小值 4081 大于阈值 3995，耗时 11 ms，正常返回 TEST IDLE。均值 4086，按 3.3 V 参考假设估算为 3292 mV；这不是电压表实测值，不能把与 3300 mV 的差值直接解释为 ADC 绝对误差。
+
+结合此前接地 0～2 的结果，A0 的基础采样及 GND/3.3 V 两端功能验收完成。未测试中间电压线性、参考电压校准或其他模拟输入通道，不宣称全通道精度验证完成。
+
+下一项为 GPIO 外接回环：断电后移除 P000 到 3.3 V 的跳线，按实际丝印连接 P008（Arduino D2，输出）与 P009（Arduino D9，输入），建议串联 1 kΩ；两个引脚不接其他外部信号。上电执行 `hmi_test gpio-loop`，逐次核对 16 次高低电平。本次仅归档用户日志和更新验收状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -944,7 +962,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未执行外接条件验证 | `can-bus`、`gpio-loop`、`pmod-spi0/spi1/arduino/irq0/irq1`、`adc-low/high`：缺少已确认的对端、跳线或已知电压 |
+| 未执行外接条件验证 | `can-bus`、`gpio-loop`、`pmod-spi0/spi1/arduino/irq0/irq1`：缺少已确认的对端或跳线；ADC low/high 已在 2026-10-01 用户复测通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
