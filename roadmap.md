@@ -4,7 +4,7 @@
 
 更新日期：2026-10-01
 
-外部中断学习例程已改用 P009 → P008/IRQ12：`gpio-irq-rising` 和 `gpio-irq-both` 替代 `pmod-irq0/irq1`，避开按键 IRQ10/IRQ11。新接线的板上结果待复验，旧 Pmod IRQ 验收日志保留在结果文档中。
+外部中断学习例程已改用 P009 → P008/IRQ12：`gpio-irq-rising` 和 `gpio-irq-both` 替代 `pmod-irq0/irq1`，避开按键 IRQ10/IRQ11。新接线已验收通过：上升沿 8 次、双边沿 16 次中断，逐次电平与中断计数均 16/16；新旧验收日志均保留在结果文档中。
 
 验收中暂缓的物料与补测事项见 [doc/TODO.md](doc/TODO.md)；当前音频输出等待 J8 配套连接线，继续其他外设验收。
 

@@ -2,7 +2,7 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
-## GPIO IRQ12 改线交付（2026-10-01，待新接线验收）
+## GPIO IRQ12 改线交付与验收通过（2026-10-01）
 
 按用户要求，移除 `test-pmod-irq0.c` / `test-pmod-irq1.c` 及对应命令，改为两个独立例程：
 
@@ -15,9 +15,41 @@
 
 工程改动包括两份例程、调度器注册、IRQ12 向量与事件映射（NVIC 43）、文档。`src/hal_entry.c` 保持原始字节，其他测试源码与按键配置未修改。仍为 45 个独立文件；两个新例程各有一个线程入口，均不包含命令行处理。
 
-自测：17 项主机工具/结构回归通过；Studio 构建 0 errors、0 warnings；DAP-LINK/PyOCD 烧录成功并复位。链接映射包含两个新入口，未包含旧 Pmod IRQ 入口。构建/烧录过程见本机 `logs/gpio-irq12-build-flash.log`。新接线尚未进行板端功能验收，编译成功不代表中断计数已实测通过；本次没有打开 COM8。下文旧 Pmod IRQ0/IRQ1 的 PASS 为历史验收，保留其原始日志，不套用到新 GPIO IRQ12 例程。
+自测：17 项主机工具/结构回归通过；Studio 构建 0 errors、0 warnings；DAP-LINK/PyOCD 烧录成功并复位。链接映射包含两个新入口，未包含旧 Pmod IRQ 入口。构建/烧录过程见本机 `logs/gpio-irq12-build-flash.log`。交付时新接线尚未进行板端功能验收；随后用户复验通过，实测日志见下方。本次助手没有打开 COM8。下文旧 Pmod IRQ0/IRQ1 的 PASS 为历史验收，保留其原始日志，不套用到新 GPIO IRQ12 例程。
 
-接下来：移除原 Pmod 跳线，连接 Arduino 排针丝印 P009 与 P008，分别运行两个新命令；每项收到 `TEST IDLE` 后再执行下一项，回传日志归档。
+用户在固件 `4344998` 上回传两项日志，验收通过。证据来自本对话，仅去除重复提示符与空行：
+
+```text
+msh >hmi_test gpio-irq-rising
+TEST BEGIN gpio-irq-rising
+GPIO IRQ rising output pin=0009 -> IRQ pin=0008, channel=12
+GPIO IRQ rising wire set=0 output=0 input=0
+GPIO IRQ rising wire set=1 output=1 input=1
+GPIO IRQ rising wire set=0 output=0 input=0
+GPIO IRQ rising wire set=1 output=1 input=1
+GPIO IRQ rising wire set=0 output=0 input=0
+GPIO IRQ rising wire PASS
+GPIO IRQ rising IRQCR=31 NVIC=1 ISEL=1; RISING
+GPIO IRQ rising GPIO->IRQ edges=8 expected=8 levels=16/16 edge_checks=16/16
+TEST RESULT gpio-irq-rising PASS code=0 elapsed=213 ms
+TEST IDLE
+
+msh >hmi_test gpio-irq-both
+TEST BEGIN gpio-irq-both
+GPIO IRQ both output pin=0009 -> IRQ pin=0008, channel=12
+GPIO IRQ both wire set=0 output=0 input=0
+GPIO IRQ both wire set=1 output=1 input=1
+GPIO IRQ both wire set=0 output=0 input=0
+GPIO IRQ both wire set=1 output=1 input=1
+GPIO IRQ both wire set=0 output=0 input=0
+GPIO IRQ both wire PASS
+GPIO IRQ both IRQCR=32 NVIC=1 ISEL=1; BOTH_EDGE
+GPIO IRQ both GPIO->IRQ edges=16 expected=16 levels=16/16 edge_checks=16/16
+TEST RESULT gpio-irq-both PASS code=0 elapsed=212 ms
+TEST IDLE
+```
+
+结论：P009 输出到 P008/IRQ12 的接线检查和 16 次电平读回全部匹配；上升沿模式累计 8 次中断，逐步计数同时验证下降沿未触发；双边沿模式累计 16 次中断。两项 `edge_checks=16/16`，分别耗时 213 ms、212 ms，均正常返回 `TEST IDLE`。关闭新接线待复验项。本轮只整理文档，不修改或重新烧录固件，也不打开串口；不将这次成功路径延伸为取消、断线或占用分支已实测。
 
 ## 用户逐项验收：LED 与按键（2026-10-01）
 
@@ -1222,7 +1254,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 外接回环验收状态 | `can-bus` 仍待对端；`pmod-irq0/irq1` 均已复验通过，edges=16、levels=16/16，分别 212/209 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
+| 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
