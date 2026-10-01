@@ -96,6 +96,10 @@ hmi_test can-bus
 
 源码：`src/test/test-audio-mic.c`、`test-audio-tone.c`、`test-audio-replay.c`。数字麦克风在 I²S 左声道；FSP 的 24 位数据右对齐，程序显式符号扩展。
 
+扬声器接板背面标有 `SPEAKER` 的白色 2 针插座，不是 3.5mm 耳机孔。按仓库背面图的方向看，该插座在右侧边缘、绿色 CAN 端子下方、RJ45 网口上方，紧邻 MIC。下图红框标出插座（裁自 `docs/picture/back.png`）；图片不能确认连接器间距及推荐扬声器阻抗，选配前需核对实物或原理图，勿凭外观认定插头规格。
+
+![扬声器插座位置](../docs/picture/speaker-connector.png)
+
 ```text
 hmi_test audio-mic
 hmi_test audio-tone
