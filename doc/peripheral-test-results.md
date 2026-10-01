@@ -242,6 +242,51 @@ TEST IDLE
 
 结论：本例 P004/IRQ9 中断链路复验通过，先前 IRQ=0 的问题已闭环；同时观察到单指滑动、双指和松手上报。`observed_points=50` 是读到的各帧触点数量累计，IRQ=78 是下降沿次数，两者统计对象不同，不要求相等。本项仍使用线程轮询读取作为对照，不据此宣称逐帧中断唤醒或触摸位置精度已验收；下一项通过无 LVGL 画板检查实际位置和绘图体验。
 
+## 用户逐项验收：无 LVGL 画板（2026-10-01）
+
+当前固件为 `5193620`。用户执行 `hmi_test lcd-touch`，确认四项操作“正常”：选色绘图及位置跟手、抬手换位置不误连线、双指绘图后松手回到 N=0、CLEAR 清屏。本项人工验收通过。
+
+串口原始输出如下（仅去除重复提示符）：
+
+```text
+msh >hmi_test lcd-touch
+TEST BEGIN lcd-touch
+LCD-TOUCH: GT911 at 0x14, range=480x272
+LCD-TOUCH: ready, direct RGB565; select color, draw, CLEAR
+LCD-TOUCH: DOWN id=0 x=92 y=144
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=205 y=55
+LCD-TOUCH: color=2
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=220 y=129
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=291 y=41
+LCD-TOUCH: color=3
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=317 y=115
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=446 y=41
+LCD-TOUCH: clear=1
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=359 y=52
+LCD-TOUCH: color=4
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=297 y=170
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=118 y=53
+LCD-TOUCH: color=1
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=164 y=118
+LCD-TOUCH: UP id=0
+LCD-TOUCH: DOWN id=0 x=444 y=56
+LCD-TOUCH: clear=2
+LCD-TOUCH: UP id=0
+TEST RESULT lcd-touch WAIT code=1 elapsed=60019 ms
+TEST IDLE
+```
+
+日志确认界面初始化、选色、两次清屏和 60 秒后退出正常；本段只出现 id=0，双指体验及无误连线的验收依据为用户明确反馈，不将其表述为串口直接证明。WAIT 符合交互例程的结果语义，人工验收结论单独记录。本次仅归档用户日志，未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
