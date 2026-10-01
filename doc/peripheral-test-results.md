@@ -138,6 +138,20 @@ TEST IDLE
 
 背光通道选择错误已闭环；本次未测量 PWM 波形、背光电流或亮度线性度。记录来源为用户串口日志与目视反馈，助手未打开 COM8。
 
+## 用户逐项验收：触摸信息（2026-10-01）
+
+用户提供的串口输出如下；当前固件对应提交 `cfcaf1b`，后续提交仅更新文档。本次助手未打开 COM8。
+
+```text
+msh >hmi_test touch-info
+TEST BEGIN touch-info
+TOUCH addr=5D id=911 range=480x272
+TEST RESULT touch-info PASS code=0 elapsed=119 ms
+TEST IDLE
+```
+
+结论：GT911 信息读取验收通过，I²C 地址为 0x5D，芯片标识为 911，报告范围为 480×272，正常清理并退出。此项不验证触点坐标、松手、多指、中断或界面操作；这些项目继续单独验收。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
