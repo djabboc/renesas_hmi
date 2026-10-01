@@ -511,6 +511,31 @@ TEST IDLE
 
 TF 卡信息、只读和文件读写三个阶段均已通过；仍需在 TEST IDLE 时拔卡验证 detect=0/SKIP，再插回重新执行以验证恢复。尚未据此确认掉电持久性、写入中拔卡恢复或长期稳定性。本次仅归档用户日志，助手未打开 COM8。
 
+### TF 卡空闲拔插与恢复验收通过
+
+用户按指导在 TEST IDLE 时拔卡，执行信息查询，再插回卡执行文件读写，日志如下（固件 `e1bb9a3`）：
+
+```text
+msh >hmi_test sd-info
+TEST BEGIN sd-info
+SD P405 detect=0 (1=inserted, 0=absent)
+TEST RESULT sd-info SKIP code=2 elapsed=26 ms
+TEST IDLE
+
+msh >hmi_test sd-file
+TEST BEGIN sd-file
+SD P405 detect=1 (1=inserted, 0=absent)
+SD sectors=15613952 bytes/sector=512 clock=30000000 protected=0
+SD created 0:/HMI01.TST (retained for inspection)
+SD file remount/readback 8192 bytes MATCH
+TEST RESULT sd-file PASS code=0 elapsed=269 ms
+TEST IDLE
+```
+
+空闲拔插恢复验收通过：无卡时 GPIO 检测为 0，26ms 后正常 SKIP；插回后检测为 1，重新初始化成功，使用下一个空闲文件名 HMI01.TST，8192 字节重新挂载读回一致，269ms 后正常退出。程序以 CREATE_NEW 保留原 HMI00.TST，此次未重新校验旧文件内容。
+
+TF 卡本轮基础验收完成，覆盖卡信息、扇区重复读取、文件写入/重新挂载读回、无卡判断与空闲插回恢复。卡上保留 HMI00.TST、HMI01.TST 两个测试文件。未测试写入中拔卡、掉电恢复、全卡扫描或长期寿命。本次仅归档用户日志，助手未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
