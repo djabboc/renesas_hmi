@@ -152,6 +152,38 @@ TEST IDLE
 
 结论：GT911 信息读取验收通过，I²C 地址为 0x5D，芯片标识为 911，报告范围为 480×272，正常清理并退出。此项不验证触点坐标、松手、多指、中断或界面操作；这些项目继续单独验收。
 
+### 触点轮询与五指数据复测
+
+用户随后执行 `hmi_test touch-points`，返回 `WAIT code=1 elapsed=15131 ms` 并正常进入 `TEST IDLE`。日志中的关键过程如下（节选，省略重复帧；各段之间不表示连续采样）：
+
+```text
+TOUCH addr=5D id=911 range=480x272
+TOUCH N=1 id=0 (237,145)
+TOUCH N=0
+
+TOUCH N=2 id=0 (279,109) id=1 (202,130)
+TOUCH N=1 id=0 (279,109)
+TOUCH N=0
+
+TOUCH N=4 id=0 (303,82) id=1 (175,75) id=2 (246,56) id=3 (97,178)
+TOUCH N=4 id=0 (303,82) id=1 (175,75) id=2 (246,56) id=3 (98,149)
+TOUCH N=3 id=1 (175,75) id=2 (246,56) id=3 (98,149)
+TOUCH N=2 id=1 (175,75) id=3 (98,149)
+TOUCH N=1 id=3 (97,113)
+TOUCH N=0
+
+TOUCH N=5 id=0 (133,105) id=1 (243,55) id=2 (324,37) id=3 (402,87) id=4 (143,216)
+TOUCH N=3 id=0 (133,105) id=1 (243,55) id=2 (324,37)
+TOUCH N=0
+TOUCH observed_points=237; position/multitouch accuracy requires interaction
+TEST RESULT touch-points WAIT code=1 elapsed=15131 ms
+TEST IDLE
+```
+
+结论：日志证明轮询能够读取 1～5 个触点，五指同帧 ID 为 0～4；移动期间坐标变化，部分手指释放后剩余 ID 得以保留，全部释放后报告 N=0。所报告坐标均在 480×272 范围内。`observed_points=237` 是各帧触点数量的累计值，不是点击次数或触摸帧数。重复坐标本身不构成故障证据，静止触点可以重复上报。
+
+本项数据读取、多触点和释放上报检查通过；屏幕位置对应关系、边缘精度和跟手效果尚待可视化画板确认，触摸中断另由 `touch-irq` 验证。设备返回 WAIT 符合例程设计，不将本次结果扩大为全部触摸功能已通过。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
