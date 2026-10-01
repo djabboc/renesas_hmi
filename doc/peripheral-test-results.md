@@ -111,7 +111,32 @@ TEST IDLE
 - 背光：未通过视觉验收。排查发现 `configuration.xml` 将 P100 配置为 `gpt5.gtiocb`，但例程调用 `R_GPT_DutyCycleSet` 时误选 `GPT_IO_PIN_GTIOCA`。FSP 分别更新 A/B 的比较和强制占空比寄存器，因此调用返回成功也无法改变 P100；B 输出保留生成配置的初始 50% 占空比。GLCDC 中断仅证明显示扫描在运行，不能证明 PWM 变化。
 - 修复：选择 `GPT_IO_PIN_GTIOCB`，启动定时器前设置 0%，每档观察时间由 250ms 延长到 1 秒，并每 20ms 检查停止请求。日志明确显示 P100/GTIOC5B 的请求占空比；人眼亮度不要求与占空比线性对应。
 - 修复验证：RT-Thread Studio 构建 0 错误、0 警告，DAP-LINK 烧录完成；17 项主机回归通过。构建/烧录记录为 `logs/lcd-backlight-channel-fix-build.log`。本次未打开 COM8，未自动运行板端例程，留给用户观察实际明暗变化。
-- 修复后的实物明暗变化仍待用户复验，不将构建成功视为视觉验收通过。
+- 修复后的实物明暗变化已由用户复验确认，详见下方记录。
+
+### 背光修复复验通过
+
+固件对应提交 `cfcaf1b`。用户运行修复版后反馈“效果很好”，确认背光变化正常；结合以下完整阶梯输出，本项视觉验收通过。设备返回 WAIT 表示需要人工观察，本次人工确认已补齐，不修改固件中的结果语义。
+
+```text
+msh >hmi_test lcd-backlight
+TEST BEGIN lcd-backlight
+LCD P100/GTIOC5B duty=0%; observe for 1 second
+LCD P100/GTIOC5B duty=20%; observe for 1 second
+LCD P100/GTIOC5B duty=40%; observe for 1 second
+LCD P100/GTIOC5B duty=60%; observe for 1 second
+LCD P100/GTIOC5B duty=80%; observe for 1 second
+LCD P100/GTIOC5B duty=100%; observe for 1 second
+LCD P100/GTIOC5B duty=80%; observe for 1 second
+LCD P100/GTIOC5B duty=60%; observe for 1 second
+LCD P100/GTIOC5B duty=40%; observe for 1 second
+LCD P100/GTIOC5B duty=20%; observe for 1 second
+LCD P100/GTIOC5B duty=0%; observe for 1 second
+LCD interrupts=719; color/brightness require visual confirmation
+TEST RESULT lcd-backlight WAIT code=1 elapsed=11229 ms
+TEST IDLE
+```
+
+背光通道选择错误已闭环；本次未测量 PWM 波形、背光电流或亮度线性度。记录来源为用户串口日志与目视反馈，助手未打开 COM8。
 
 ## 构建与结构检查
 
