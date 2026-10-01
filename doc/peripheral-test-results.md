@@ -938,6 +938,30 @@ TEST IDLE
 
 已向 `peripheral-tests.md` 增补方向表及 `docs/picture/pmod0-spi-pads.png`。图由工程原有渲染图裁剪标注，已目视检查；圈出的是 PCB 焊点，不能混同弯脚插座从板外看的插孔上下方向。当前 Pmod0 回环尚未收到用户测试日志，不记为已通过。本次未修改固件、未打开 COM8，文档经 `git diff --check` 检查后提交。
 
+## 用户逐项验收：Pmod0 SPI 回环失败待定位（2026-10-01）
+
+用户按接线指引运行 `pmod-spi0`：
+
+```text
+msh >hmi_test pmod-spi0
+TEST BEGIN pmod-spi0
+msh >TEST RESULT pmod-spi0 FAIL code=-1 elapsed=5 ms
+TEST IDLE
+```
+
+结论：本项未通过。旧例程把分频计算、打开驱动、启动传输、回调错误和数据不匹配都归并为 -1；5 ms 的总耗时不足以确定具体失败原因。不能直接归因于接反插座或驱动缺陷。
+
+本次给 `test-pmod-spi0.c` 增加分阶段诊断：
+
+- 片选保持高电平，P305 临时作为 GPIO 输出 0/1/0/1，P304 配置为上拉输入逐次读回，每步等待 2 ms；断线时上拉应使低电平检查失败。此项只驱动 P305，不主动探测其他排的 GPIO。
+- 接线检查通过后，显式将 P304/P305/P306 复用为 SCI6，按原有 1 MHz、mode0、工程生成的 DTC 配置执行八组 64 字节收发。退出时恢复片选及三个信号脚，仍是单文件、单线程入口。
+- 分别报告引脚配置、分频、驱动打开/启动/关闭的 FSP 返回码；传输错误打印回调事件，超时返回超时码，字节不匹配报告首个 pattern/byte/TX/RX。
+- 更正文件头的 J1 针号为 MOSI/P305=J1-3、MISO/P304=J1-5，与已核对原理图一致。
+
+验证：RT-Thread Studio 最终构建 0 错误、0 警告，DAP-LINK 烧录成功并复位，日志见 `logs/pmod-spi0-diagnostics-build.log`。17 项主机工具与独立例程结构检查通过，`git diff --check` 通过；这些检查不等于 Pmod0 的板上回环已通过。
+
+低速接线读回成功只证明 P305/P304 之间能传递高低电平，不能替代后面的 SPI 字节校验；失败只说明当前连线/电平未通过，仍需结合日志排查，不能自动断言是用户接线错误。本次未打开 COM8，等待用户在新固件上保持当前接线重跑同一命令，提供完整分阶段输出。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。

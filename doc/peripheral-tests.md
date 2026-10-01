@@ -232,6 +232,8 @@ hmi_test rw007-adv
 | `hmi_test adc-low` | A0/P000 接 GND | 所有读数 <100 |
 | `hmi_test adc-high` | A0/P000 接板上 3.3 V | 所有读数 >3995 |
 
+`pmod-spi0` 先执行低速接线诊断：P305 输出 0/1/0/1，P304 上拉输入读回，出现 `wire PASS` 后再切换 SCI6。若 `wire FAIL`，先核对插孔、跳线及接触；若已进入 SCI6，则根据 `open/start failed fsp=...`、`transfer error ... event=...`、`timeout` 或 `mismatch ... TX=... RX=...` 定位。只有最终 `8x64 bytes MATCH` 和 PASS 才代表 SPI 回环通过。该阶段诊断目前仅加入 Pmod0 例程。
+
 ### Pmod 排序与方向
 
 以下采用 V3.1 原理图的奇偶交错针号，不混用通用 Pmod 文档中可能出现的按排连续编号。此前接线表将 MOSI/MISO 写成 2/3、GPIO0/IRQ 写成 8/7，均不能作为本板原理图针号使用，现已更正。
