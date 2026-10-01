@@ -12,7 +12,7 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 | 任务 | 本轮实际结果 | 尚需最终复测 |
 | --- | --- | --- |
-| P01 网口 | 自测回环通过；2026-10-01 用户提供日志确认 phy/mac/phyloop/link/lwip 五阶段全部 PASS。MAC/PHY 回环各 12/12 帧，链路 100Mbps 全双工，DHCP/DNS/TCP/HTTP 内容校验通过，详情见下方复测记录。 | 网线拔出后的无链路检测、重新插入后 link/lwip 恢复仍待验证；未做长期稳定性/吞吐量测试。 |
+| P01 网口 | 自测回环通过；2026-10-01 用户提供日志确认 phy/mac/phyloop/link/lwip 五阶段全部 PASS。MAC/PHY 回环各 12/12 帧，链路 100Mbps 全双工，DHCP/DNS/TCP/HTTP 内容校验通过；后续 link/lwip 无链路时均在 6156 ms 返回 SKIP。 | 重新插入后 link/lwip 恢复仍待验证；未做长期稳定性/吞吐量测试。 |
 | P02 TF | SDHI 打开及卡检测可执行，`card_inserted=0`；`read/file` SKIP。 | 插 FAT16/32 卡后依次 info/read/file，确认新建文件 8192 字节读回一致。 |
 | P03 CAN | 内部回环 8 组载荷通过，最终 TX=1/RX=1/errors=0。 | CAN 收发器到外部节点尚未验证；500 kbit/s 对端回复 0x322。 |
 | P04 麦克风 | SSI/DTC 接收 8192 个双声道帧完成，左声道数据有变化，PASS；约 16026 Hz。 | 说话/静音对比、增益与音质。DMA 完成不能代替音质验收。 |
@@ -42,7 +42,9 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 联网阶段解析 `www.msftconnecttest.com` 到 `23.205.151.12`，TCP 连接成功，HTTP status=200、received=187、expected_body=MATCH；统计 tx=13、rx=8、drops=0，输出 `INTERNET PASS result=0`。drops=0 是此测试接收路径的计数，不代表整个网络不存在丢包。五个阶段均正常返回 `TEST IDLE`。
 
-结论：网口从底层回环到真实互联网访问的功能复测通过。拔插恢复尚无日志，不标为通过。完成当前测试后拔掉网线运行 `hmi_test eth link`，应约 6 秒后 SKIP；再插回，依次重跑 `link` 和 `lwip`，应恢复 PASS。
+后续用户日志：`hmi_test eth link` 和 `hmi_test eth lwip` 均输出 `ETH no physical link`，在 6156 ms 后返回 `SKIP code=2` 和 `TEST IDLE`。无链路时有限等待并正常退出的行为符合预期；日志本身不能确认第二次命令前是否已插回网线。
+
+结论：网口从底层回环到真实互联网访问的功能复测通过，无链路退出行为已验证。插回后的恢复仍待验证，不标为通过。插回网线后依次重跑 `link` 和 `lwip`，应恢复 PASS；若已接线仍无链路，先检查两端插接、路由器 LAN 端口和线缆。
 
 ## 已定位并修复的问题
 
