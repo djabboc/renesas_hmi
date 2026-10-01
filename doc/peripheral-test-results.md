@@ -873,6 +873,10 @@ TEST IDLE
 
 下一步移除 A0 上可能存在的其他连接，用跳线将 Arduino A0/P000 接板上 GND，执行 `hmi_test adc-low`。例程要求 32 次采样的最大值小于 100 才 PASS；随后另行进行 3.3 V 高端测试。接线时先断电，确认针脚后再上电，保持原有调试串口接线。本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+### ADC 接线指引补充（2026-10-01）
+
+用户反馈底部找不到 Arduino A0。核对工程原有背面渲染图和 V3.1 原理图第 3 页后确认：本板实际丝印为 P000，对应 Arduino A0 / J6 第 1 脚。此前仅使用 Arduino 名称的指引不够直观，已在 `peripheral-tests.md` 补充接口方向、6 孔排母位置，以及 P000/GND 标注图 `docs/picture/adc-a0-connector.png`。图由原有 back.png 裁剪标注，已目视核对。此项只澄清接线，adc-low 仍待用户实测，未更改固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
