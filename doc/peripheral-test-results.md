@@ -398,6 +398,20 @@ TEST IDLE
 
 用户反馈“没有显示图像”。这符合例程设计：测试没有启动 GLCDC，也没有把小画布送入 LCD 帧缓冲；屏幕无图像不是本项故障。本项证明该绘图操作及像素结果，不代表 G2D 到 LCD 的联合显示链路已验收。下一项独立测试 JPEG 解码，同样在内存中校验。本次仅归档用户日志，未修改固件、未打开 COM8。
 
+## 用户逐项验收：JPEG 硬件解码（2026-10-01）
+
+当前固件为 `5193620`，用户提供日志：
+
+```text
+msh >hmi_test graphics-jpeg
+TEST BEGIN graphics-jpeg
+JPEG 16x16 lines=16 status=A1 pixel=8410
+TEST RESULT graphics-jpeg PASS code=0 elapsed=9 ms
+TEST IDLE
+```
+
+本项验收通过：内置 16×16 灰色 baseline JPEG 完成硬件解码，解码行数为 16，首像素 RGB565 为 0x8410，全部 256 个像素均通过允许量化误差的通道校验；9ms 后正常退出。status=A1 为例程累计的回调状态位，程序已检查完成位及错误位。验证在内存中完成，不依赖 LCD，也不表示其他 JPEG 格式或大图解码均已覆盖。本次仅归档用户日志，未修改固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
