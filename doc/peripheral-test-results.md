@@ -184,6 +184,38 @@ TEST IDLE
 
 本项数据读取、多触点和释放上报检查通过；屏幕位置对应关系、边缘精度和跟手效果尚待可视化画板确认，触摸中断另由 `touch-irq` 验证。设备返回 WAIT 符合例程设计，不将本次结果扩大为全部触摸功能已通过。
 
+### 触摸中断复测发现问题及修复
+
+用户在固件 `cfcaf1b` 上执行 `hmi_test touch-irq`，多次点击、往返滑动和松手均有坐标记录，但 IRQ 计数为 0。本项验收不通过；原程序的 WAIT 不能作为中断正常的证据。以下为关键日志节选，省略重复帧和中间轨迹：
+
+```text
+msh >hmi_test touch-irq
+TEST BEGIN touch-irq
+TOUCH addr=14 id=911 range=480x272
+TOUCH N=1 id=0 (244,186)
+TOUCH N=0
+TOUCH N=1 id=0 (174,197)
+TOUCH N=1 id=0 (384,157)
+TOUCH N=1 id=0 (152,197)
+TOUCH N=1 id=0 (469,151)
+TOUCH N=1 id=0 (238,174)
+TOUCH N=0
+TOUCH observed_points=108; position/multitouch accuracy requires interaction
+TOUCH falling-edge IRQ count=0; touch the panel to generate edges
+TEST RESULT touch-irq WAIT code=1 elapsed=15134 ms
+TEST IDLE
+```
+
+源码排查确认：
+
+1. 复位结束后调用 `rt_pin_mode(P004, PIN_MODE_INPUT)`，配置中缺少 `IOPORT_CFG_IRQ_ENABLE`，清除了 IRQ 引脚输入使能；此时 I²C 轮询仍可正常读取数据。
+2. 当前 `drv_gpio.c` 的 `rt_pin_attach_irq` 只保存 mode，`rt_pin_irq_enable` 使用原生成配置打开 ICU，不应用该 mode。IRQ9 的生成配置实际是上升沿，原例程却打印为下降沿。
+3. `rt_pin_mode` 会重新打开整个 IOPORT；复位时连续调用可能还原刚设置的另一个引脚。本例改用检查返回值的单引脚 FSP 配置，保留已验证画板例程的复位等待时间。0x14 和 0x5D 均为 GT911 合法地址，本次地址变化本身不是故障证据。
+
+修复仅位于独立例程 `test-touch-irq.c`：复位后明确设置 P004 为输入并使能 IRQ；复制 IRQ9 配置，显式选择下降沿及本例回调，通过 FSP 打开、使能、关闭 ICU；回调仍只计数。线程继续轮询坐标用于对照，有触点且有 IRQ 才返回 PASS，有触点却无 IRQ 返回 FAIL，无触点保留 WAIT。此判定不证明逐帧中断驱动或位置精度。
+
+修复版 RT-Thread Studio 构建 0 错误、0 警告，DAP-LINK 烧录完成；17 项主机回归通过，构建与烧录日志为 `logs/touch-irq-fix-build.log`。修复后的真实触摸中断计数仍待用户复验；本次未打开 COM8，不将代码检查或构建结果替代硬件验收。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。

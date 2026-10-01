@@ -3,7 +3,8 @@
  * @file test-touch-irq.c
  * @brief 验证 GT911 的触摸中断及完整触点读取。
  *
- * P004 下降沿只做计数；线程负责 I2C 读帧并清就绪位；结束注销 IRQ。
+ * P004/IRQ9 下降沿只做计数；线程轮询读帧供对照，结束关闭 IRQ。
+ * 读到触点但没有中断时返回 FAIL；无人触摸时返回 WAIT。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
  * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
  */
@@ -50,10 +51,9 @@ static int test_elapsed(rt_tick_t start, unsigned milliseconds)
 
 /* 中断只计数；I2C 读帧和清状态在测试线程中完成。 */
 static volatile unsigned touch_irq_count;
-/* GT911 中断仅计数；I2C 数据读取由线程执行。 */
-static void touch_irq_callback(void *argument)
+static void touch_irq_callback(external_irq_callback_args_t *arguments)
 {
-    RT_UNUSED(argument);
+    RT_UNUSED(arguments);
     touch_irq_count++;
 }
 static struct rt_i2c_bus_device *touch_bus;
@@ -84,14 +84,36 @@ static int initialize_touch(void)
     {
         return -RT_ENOSYS;
     }
-    rt_pin_mode(BSP_IO_PORT_08_PIN_01, PIN_MODE_OUTPUT);
-    rt_pin_write(BSP_IO_PORT_08_PIN_01, 0);
-    rt_pin_mode(BSP_IO_PORT_00_PIN_04, PIN_MODE_OUTPUT);
-    rt_pin_write(BSP_IO_PORT_00_PIN_04, 1);
+    /* 只修改 RST 和 INT；本工程的 rt_pin_mode 会重新打开整个 IOPORT，
+     * 可能把刚设置的另一个引脚还原，破坏复位期间的地址选择电平。 */
+    if (R_IOPORT_PinCfg(&g_ioport_ctrl,
+                        BSP_IO_PORT_08_PIN_01,
+                        IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW) !=
+        FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
+    if (R_IOPORT_PinCfg(&g_ioport_ctrl,
+                        BSP_IO_PORT_00_PIN_04,
+                        IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_HIGH) !=
+        FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
     rt_thread_mdelay(10);
-    rt_pin_write(BSP_IO_PORT_08_PIN_01, 1);
+    if (R_IOPORT_PinWrite(&g_ioport_ctrl, BSP_IO_PORT_08_PIN_01, BSP_IO_LEVEL_HIGH) !=
+        FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
     rt_thread_mdelay(100);
-    rt_pin_mode(BSP_IO_PORT_00_PIN_04, PIN_MODE_INPUT);
+    /* 普通输入模式会清除 ISEL；必须同时保留 IRQ 输入使能。 */
+    if (R_IOPORT_PinCfg(&g_ioport_ctrl,
+                        BSP_IO_PORT_00_PIN_04,
+                        IOPORT_CFG_PORT_DIRECTION_INPUT | IOPORT_CFG_IRQ_ENABLE) != FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
     touch_address = 0x14;
     if (touch_read(GT911_REG_ID, identity, sizeof(identity)))
     {
@@ -119,13 +141,13 @@ static int initialize_touch(void)
 }
 
 /* 只统计合法触点；位置与多指操作仍需人工对照，结束返回 WAIT。 */
-static int observe_touch_points(void)
+static int observe_touch_points(unsigned *observed_points)
 {
     uint8_t status;
     uint8_t points[GT911_MAX_POINTS * GT911_POINT_BYTES];
     /* 寄存器地址高字节在前，写 0 清除本帧就绪标志。 */
     uint8_t clear_status[] = {GT911_REG_STATUS >> 8, GT911_REG_STATUS & 0xff, 0};
-    unsigned observed_points = 0;
+    *observed_points = 0;
     rt_tick_t start = rt_tick_get();
     while (!test_elapsed(start, TOUCH_WINDOW_MS) && !test_cancelled())
     {
@@ -160,14 +182,14 @@ static int observe_touch_points(void)
                     return -RT_ERROR;
                 }
                 rt_kprintf(" id=%u (%u,%u)", points[point_index * GT911_POINT_BYTES], x, y);
-                ++observed_points;
+                *observed_points += 1;
             }
             rt_kprintf("\n");
         }
         rt_thread_mdelay(10);
     }
     rt_kprintf("TOUCH observed_points=%u; position/multitouch accuracy requires interaction\n",
-               observed_points);
+               *observed_points);
     return TEST_WAIT;
 }
 
@@ -188,6 +210,8 @@ static void test_restore_pin(bsp_io_port_pin_t pin)
 /* 按本文件配置打开外设，执行验证；所有退出路径都在返回前清理本次资源。 */
 static int run_test(void)
 {
+    static external_irq_cfg_t irq_config;
+    unsigned observed_points = 0;
     int result;
 
     result = initialize_touch();
@@ -196,21 +220,46 @@ static int run_test(void)
         return result;
     }
     touch_irq_count = 0;
-    if (rt_pin_attach_irq(
-            BSP_IO_PORT_00_PIN_04, PIN_IRQ_MODE_FALLING, touch_irq_callback, RT_NULL) != RT_EOK)
+    /* 本工程的 GPIO IRQ 接口只保存 mode，没有据此修改硬件触发方式。
+     * 独立复制 IRQ9 配置，明确选择下降沿；不修改 FSP 生成文件。 */
+    irq_config = g_external_irq9_cfg;
+    irq_config.trigger = EXTERNAL_IRQ_TRIG_FALLING;
+    irq_config.p_callback = touch_irq_callback;
+    if (R_ICU_ExternalIrqOpen(&g_external_irq9_ctrl, &irq_config) != FSP_SUCCESS)
     {
         return -RT_ERROR;
     }
-    if (rt_pin_irq_enable(BSP_IO_PORT_00_PIN_04, PIN_IRQ_ENABLE) != RT_EOK)
+    if (R_ICU_ExternalIrqEnable(&g_external_irq9_ctrl) != FSP_SUCCESS)
     {
-        rt_pin_detach_irq(BSP_IO_PORT_00_PIN_04);
+        R_ICU_ExternalIrqClose(&g_external_irq9_ctrl);
         return -RT_ERROR;
     }
-    result = observe_touch_points();
-    rt_pin_irq_enable(BSP_IO_PORT_00_PIN_04, PIN_IRQ_DISABLE);
-    rt_pin_detach_irq(BSP_IO_PORT_00_PIN_04);
+    rt_kprintf("TOUCH P004/IRQ9 falling-edge enabled; touch within 15 seconds\n");
+    result = observe_touch_points(&observed_points);
+    if (R_ICU_ExternalIrqDisable(&g_external_irq9_ctrl) != FSP_SUCCESS)
+    {
+        result = -RT_ERROR;
+    }
+    if (R_ICU_ExternalIrqClose(&g_external_irq9_ctrl) != FSP_SUCCESS)
+    {
+        result = -RT_ERROR;
+    }
     rt_kprintf("TOUCH falling-edge IRQ count=%u; touch the panel to generate edges\n",
                touch_irq_count);
+    /* 轮询有数据不代表 IRQ 有效；必须同时看到触点和真实中断。
+     * 无人操作仍为 WAIT，避免把缺少验收动作当成硬件故障。 */
+    if (result == TEST_WAIT && observed_points > 0)
+    {
+        if (touch_irq_count == 0)
+        {
+            rt_kprintf("TOUCH IRQ FAIL: points received but no interrupt detected\n");
+            result = -RT_ERROR;
+        }
+        else
+        {
+            result = TEST_PASS;
+        }
+    }
     return result;
 }
 
