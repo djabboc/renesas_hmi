@@ -834,6 +834,29 @@ TEST IDLE
 
 本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：RW007 BLE 广播可发现性（2026-10-01）
+
+用户确认手机能够发现 `RW007-ED30`，手工报告地址为 `FC:56:4A:A6:ED:30`。板端日志如下，仅整理行尾空白：
+
+```text
+msh >hmi_test rw007-adv
+TEST BEGIN rw007-adv
+msh >RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 00000000 00000000 flags=00
+RW007: command=0 result=0 bytes=0
+BLE: init queued without ACK; following operation must confirm support
+RW007: command=25 result=0 bytes=0
+ADV: command accepted for 60 seconds; verify discovery on phone
+TEST RESULT rw007-adv WAIT code=1 elapsed=17156 ms
+TEST IDLE
+```
+
+结论：按用户手机发现设备的反馈，广播可发现性验收通过。板端广播命令返回成功，并完成观察窗口后正常退出，总耗时 17156 ms（包含初始化）。WAIT 表示此项依赖手机确认，本次用户反馈已补齐可发现性的人工证据。日志中的 60 秒为下发的广播时长参数，例程实际观察约 15 秒即关闭，二者并不等同。
+
+地址待核对：此前 `rw007-info` 的 Wi-Fi MAC 与 `rw007-ble` 的 BLE public 地址均为 `FC:58:4A:A6:ED:30`，本次用户手工记录第二字节为 `56`。保留原反馈，不能擅自改成 `58`，也不能仅凭同名认定地址完全一致；需用户复核手机显示。当前通过范围为用户确认的广播可发现性，地址一致性仍待确认；本次未验收连接、服务枚举或 GATT 收发。
+
+启动时一次全 0 SPI 头异常仍保留，后续命令成功不代表底层零错误。下一项可先做 A0/P000 的 ADC 采样，再用已知 GND/3.3 V 输入进行端点验证。本次仅归档用户日志并更新状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -874,7 +897,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | WAIT | `audio-tone`、`audio-replay`：播放采样数达到预期，声音内容/音质需试听 |
 | WAIT | `lcd-colors`、`lcd-backlight`、三个界面例程：程序和生命周期已检查，图像/触摸手感需目视操作 |
 | WAIT | `touch-points`、`touch-irq`：窗口内无人触摸，坐标和实际中断边沿需触摸复测 |
-| WAIT | `rw007-adv`：命令被接受并观察 15 秒，手机可发现性需手机扫描 |
+| 人工可发现性通过；地址待核对 | `rw007-adv`：用户手机发现 RW007-ED30，板端 WAIT，17156 ms；手工地址第二字节 56 与此前模块查询 58 不同，保留差异待核对 |
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
