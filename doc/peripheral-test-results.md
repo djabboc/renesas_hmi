@@ -9,9 +9,31 @@
 | 尚未覆盖 | 已有证据与边界 |
 | --- | --- |
 | RTC长期精度 | 短时走时、闹钟已通过；现有例程会重设测试时间，不提供长期误差测量 |
-| JPEG到LCD联合显示（已补齐） | 用户确认显示成功；16×16/16行、pixel=8410、frames=974、15211 ms，正常退出；G2D仍仅验证内存 |
+| JPEG到LCD联合显示（已补齐） | 灰图及480×272彩色风光图均经用户视觉确认；彩色图12/12区域匹配、解码与校验16 ms、30205 ms正常退出；G2D仍仅验证内存 |
 
 USB收尾已由后续日志补齐：128字节跨包回显一致，运行中一次物理拔插后重新枚举并回显成功。当前BLE也已补齐：首轮连接并收到断开事件，第二轮重新运行后再次连接成功。音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
+
+## 彩色风光 JPEG：板端与人工验收通过（2026-10-01）
+
+用户对固件 `f65bd8b` 明确反馈“显示效果很好”，提供完整日志：
+
+```text
+msh >hmi_test graphics-jpeg
+TEST BEGIN graphics-jpeg
+msh >JPEG color patches=12/12 (RGB565 channel tolerance=2/4/2)
+JPEG 480x272 lines=272 status=A1 pixel=3BF7
+JPEG compressed=60901 bytes decode/check=16 ms
+JPEG LCD: landscape 480x272, native RGB565; observe for 30 seconds
+JPEG LCD: frames=1936; visual confirmation required
+TEST RESULT graphics-jpeg WAIT code=1 elapsed=30205 ms
+TEST IDLE
+```
+
+尺寸和完成行数正确，12 个参考区域全部匹配，结合用户对实际画面的确认，关闭彩色风光图待办。程序 WAIT 保留其人工观察语义，文档记为验收通过。
+
+16 ms 是当前例程的解码与区域校验合计时间，包含驱动调用、等待调度和检查，不能当作独立硬件解码耗时，也不能据此宣称连续视频帧率；1936 是持续扫描期间的 GLCDC 行检测回调计数。此次验证一张 baseline 4:4:4 JPEG，不表示其他 JPEG 编码形式、大图或全部像素均完成精确比对。
+
+本轮仅归档用户实测日志、更新验收状态及学习说明，没有修改固件、重新烧录或打开 COM8。
 
 ## 彩色风光 JPEG 与转换脚本：交付待验收（2026-10-01）
 

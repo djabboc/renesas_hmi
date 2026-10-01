@@ -175,4 +175,4 @@ GPIO 输入：`gpio-inputs` 五次逐键电平测试已通过人工验收，P005
 - 已完成 Studio 构建、17 项主机回归及当前接线条件下板测；线程互斥/重复退出/堆稳定回归通过。
 - 最终交付记录及未满足实物条件的项目见 `doc/peripheral-test-results.md`。Wi-Fi 热点本轮不可见，联网正向路径待用户重新开启热点复测。
 
-2026-10-01 扩展：按用户要求新增 `scripts/jpg_to_array.py`，将 `graphics-jpeg` 改为 480×272 彩色风光图与 12 处区域颜色校验，保留单文件独立例程结构。历史灰图验收通过；新彩色图待用户板上与视觉复验，详见 `doc/jpeg-image-conversion.md`。
+2026-10-01 扩展：按用户要求新增 `scripts/jpg_to_array.py`，将 `graphics-jpeg` 改为 480×272 彩色风光图与 12 处区域颜色校验，保留单文件独立例程结构。历史灰图验收通过；新彩色图已通过用户板上与视觉验收（12/12 区域、解码与校验 16 ms），详见 `doc/jpeg-image-conversion.md`。
