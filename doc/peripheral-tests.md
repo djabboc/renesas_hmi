@@ -227,7 +227,7 @@ hmi_test rw007-adv
 | `hmi_test pmod-arduino` | Arduino D11/P512 → D12/P511 | SCI4，同上；D13/P204 为 SCK，D10/P712 为 CS |
 | `hmi_test gpio-irq-rising` | Arduino D9/P009 输出 → D2/P008 输入 | IRQ12，16 次翻转产生 8 次上升沿中断；下降沿不触发 |
 | `hmi_test gpio-irq-both` | 同上，接线无需更换 | IRQ12，16 次翻转产生 16 次双边沿中断 |
-| `hmi_test pmod-i2c` | Arduino SCL/P202、SDA/P203 接 3.3 V I²C 设备，7 位地址 0x50，并共地/合适上拉 | 只读 1 字节应答；不校验该设备内容 |
+| `hmi_test pmod-i2c` | 四针 SSD1306 128×64 OLED：VCC→3.3V、GND→GND、SCL→P202、SDA→P203 | 尝试 0x3C/0x3D，显示边框、棋盘格、移动方块，目视验收 |
 | `hmi_test adc-sample` | A0/P000，可先悬空观察 | 32 次转换、极值、均值，仅 WAIT |
 | `hmi_test adc-low` | A0/P000 接 GND | 所有读数 <100 |
 | `hmi_test adc-high` | A0/P000 接板上 3.3 V | 所有读数 >3995 |
@@ -239,6 +239,18 @@ hmi_test rw007-adv
 2026-10-01 用户已复验两项 GPIO IRQ：上升沿 8 次（213 ms）、双边沿 16 次（212 ms），电平与逐次中断计数均 16/16，全部 PASS；原始日志见 `peripheral-test-results.md`。
 
 `pmod-spi0` 先执行低速接线诊断：P305 输出 0/1/0/1，P304 上拉输入读回，出现 `wire PASS` 后再切换 SCI6。若 `wire FAIL`，先核对插孔、跳线及接触；若已进入 SCI6，则根据 `open/start failed fsp=...`、`transfer error ... event=...`、`timeout` 或 `mismatch ... TX=... RX=...` 定位。只有最终 `8x64 bytes MATCH` 和 PASS 才代表 SPI 回环通过。该阶段诊断目前仅加入 Pmod0 例程。
+
+### SSD1306 OLED：外接 I²C 验收
+
+`pmod-i2c` 已由旧 0x50 只读夹具测试替换为 SSD1306 显示测试，源码仍是独立文件 `src/test/test-pmod-i2c.c`。适用四针 I²C、128×64、支持 3.3V 供电且自带上电复位的 SSD1306 模块；不适用于 SPI 接口、128×32 或 SH1106 模块。模块上的 SCK 标注若代表 I²C 时钟，与 SCL 接法相同。
+
+1. 断电，移除此前回环跳线和占用 P202/P203 的外接模块。
+2. 按 OLED **丝印**接 VCC→板上3.3V、GND→GND、SCL→P202、SDA→P203，不按四针排列顺序猜接线。总线与板载 GT911 共用，使用板上/模块已有的 3.3V 上拉，不接 5V 上拉。
+3. 上电后执行 `hmi_test pmod-i2c`。例程只用 NOP 命令尝试 0x3C、0x3D，选择首个应答地址；无需输入地址，也不读 SSD1306 不支持的 I²C 显存。
+4. 观察完整四边框约 2 秒、全屏 8×8 棋盘格约 2 秒、框内 8×8 方块向右再向左移动。动画为 50 帧，每帧写入后等待 80 ms；包括 I²C 耗时，总时长大于 8 秒。
+5. 正常完成输出 `OLED frames=52`，关闭显示，返回 `WAIT code=1` 和 `TEST IDLE`。确认无缺行、缺列、错位、花屏且动画正常，将图像结论和日志一起回传。`hmi_test stop` 可提前结束并尝试熄屏。
+
+`SKIP` 表示两地址均未应答，先检查供电、共地及 SCL/SDA；已应答后写入失败返回 `FAIL`。ACK 不自动鉴别控制器型号，也不能证明图像正确。若命令完成但无图或偏移，需核对模块是否确为 SSD1306 128×64。例程每次重新初始化 OLED，结束保留共享 i2c1 总线供其他例程使用，不配置 GT911 复位/中断引脚。
 
 ### Pmod 排序与方向
 

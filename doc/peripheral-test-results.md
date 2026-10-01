@@ -2,6 +2,18 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## SSD1306 外接 I²C 例程交付（2026-10-01，待屏幕验收）
+
+用户没有原 0x50 夹具，提供 I²C SSD1306 128×64 OLED。`src/test/test-pmod-i2c.c` 已替换为独立显示例程，命令继续使用 `hmi_test pmod-i2c`；仍仅有一个线程入口，不包含命令行处理，不调用其他例程，无 LVGL 依赖。
+
+- 接线：四针模块 VCC→3.3V、GND→GND、SCL→P202、SDA→P203。使用模块丝印辨认，不依赖针脚排列。
+- 只向 0x3C、0x3D 发送 NOP，选择首个应答地址，然后使用 SSD1306 128×64、电荷泵、页寻址配置。应答不代表自动识别芯片型号。
+- 显示四边框 2 秒、8×8 棋盘格 2 秒、50 帧左右移动方块。每包检查 I²C 写入结果，每页检查停止请求。成功路径输出 `frames=52`，关闭显示后返回 WAIT，等人工确认图像。
+- 无地址应答返回 SKIP；初始化或刷新写入失败返回 FAIL。已找到模块后，失败和停止均尝试发送关闭显示命令；保留共享 i2c1 总线，不改变 GT911 复位/IRQ 配置。
+- 此版本替代旧 0x50 单字节读测试，历史无应答日志仍保留，不能用来判定新 OLED 例程是否通过。
+
+自测：17 项主机结构与工具回归通过（包含 `hal_entry.c` 原始哈希、45 个独立文件和唯一入口约束）；`git diff --check` 通过；Studio 编译 0 errors、0 warnings；DAP-LINK/PyOCD 烧录成功并复位开发板。构建/烧录过程保存在本机 `logs/ssd1306-i2c-build-flash.log`。本次助手未打开 COM8，实际 OLED 接线、地址应答、显示效果与异常分支尚未板测，待用户回传日志和图像观察结论。
+
 ## GPIO IRQ12 改线交付与验收通过（2026-10-01）
 
 按用户要求，移除 `test-pmod-irq0.c` / `test-pmod-irq1.c` 及对应命令，改为两个独立例程：
@@ -1253,7 +1265,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
-| SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
+| 待 OLED 验收 | `pmod-i2c`：已改为 SSD1306 128×64 图案/动画测试；原 0x50 无响应为旧实现记录 |
 | 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
