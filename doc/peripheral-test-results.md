@@ -707,6 +707,35 @@ TEST IDLE
 
 下一步开启手机 2.4 GHz 热点，执行 `hmi_test rw007-wifi`，核对扫描结果是否包含用户热点。此阶段仅扫描，无需密码。本次只归档用户日志，未修改或烧录固件，未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：RW007 Wi-Fi 扫描（2026-10-01）
+
+用户开启 2.4 GHz 热点后运行独立例程，提供以下日志：
+
+```text
+msh >hmi_test rw007-wifi
+TEST BEGIN rw007-wifi
+msh >RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 00000000 00000000 flags=00
+RW007: command=0 result=0 bytes=0
+RW007: command=1 result=0 bytes=0
+RW007: command=6 result=0 bytes=0
+WIFI[1]: SSID=Hotspot channel=11 RSSI=-48 security=0x00400004
+WIFI[2]: SSID=iTV-YaMp channel=8 RSSI=-79 security=0x00400006
+WIFI[3]: SSID=ChinaNet-YaMp channel=8 RSSI=-79 security=0x00400006
+WIFI[4]: SSID=<hidden> channel=6 RSSI=-81 security=0x00400004
+WIFI[5]: SSID=ChinaNet-0916 channel=6 RSSI=-83 security=0x00400004
+WIFI[6]: SSID=TP-LINK_3842 channel=11 RSSI=-88 security=0x00400004
+WIFI: scan complete result=0 reports=6
+TEST RESULT rw007-wifi PASS code=0 elapsed=3275 ms
+TEST IDLE
+```
+
+结论：Wi-Fi 扫描验收通过，耗时 3275 ms，共收到 6 条报告，完成事件 result=0。用户热点 Hotspot 可见，信道 11、RSSI=-48 dBm；本项只确认扫描，不代表已关联热点或可访问互联网。
+
+保留异常：本次启动阶段 SPI 头为全 0（flags=00），与上一项信息读取的全 FF 不同，后续初始化及扫描成功。尚未定位启动异常应答的根因，不能声明 SPI 零错误。
+
+下一步保持热点和手机移动数据开启，使用 `hmi_test rw007-internet <ssid> <password>` 验证热点关联、DHCP、DNS、TCP 和 HTTP 正文匹配。当前扫描已能发现目标热点，但此前重构版联网因未发现热点而失败的记录，仍需新的联网结果才能关闭。本次只归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
