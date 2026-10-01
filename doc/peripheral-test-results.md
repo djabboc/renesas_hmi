@@ -1013,6 +1013,37 @@ TEST IDLE
 
 下一步断电，把跳线移至另一个 Pmod 接口的 MOSI/MISO（按该口标识核对，保持两脚相邻的接法），拆除当前这组跳线；上电执行 `hmi_test pmod-spi0`。其低速检查应先读回 0/1/0/1，再进行 SPI 字节校验。SPI1 通过不替代 SPI0 验收。此轮未修改或烧录固件、未打开 COM8，只归档结果及更新指引；文档经 `git diff --check` 检查后提交。
 
+## 用户逐项验收：Pmod SPI0 复验通过（2026-10-01）
+
+用户在无丝印接口上按另一个同向插座的成功孔位进行接线后，提供两组测试日志：
+
+```text
+msh >hmi_test pmod-spi1
+TEST BEGIN pmod-spi1
+msh >PMOD spi1 MOSI/MISO loop 8x64 bytes MATCH
+TEST RESULT pmod-spi1 PASS code=0 elapsed=16 ms
+TEST IDLE
+
+: command not found.
+msh >hmi_test pmod-spi0
+TEST BEGIN pmod-spi0
+msh >PMOD spi0 wire P305=0 P304=0
+PMOD spi0 wire P305=1 P304=1
+PMOD spi0 wire P305=0 P304=0
+PMOD spi0 wire P305=1 P304=1
+PMOD spi0 wire PASS; switching to SCI6
+PMOD spi0 SCI6 1MHz mode0 DTC tx=1 rx=1
+PMOD spi0 MOSI/MISO loop 8x64 bytes MATCH
+TEST RESULT pmod-spi0 PASS code=0 elapsed=40 ms
+TEST IDLE
+```
+
+结论：SPI1 再次通过，16 ms；SPI0 接线检查 0/1/0/1 全部匹配，随后 SCI6 在 1 MHz、mode0、收发 DTC 均启用的条件下完成 8×64 字节校验，总耗时 40 ms。两组独立例程均正常退出，本轮 Pmod SPI0/SPI1 回环功能验收完成，关闭 SPI0 待移线复测项。
+
+此前 SPI0 的低速接线失败与当时未连通 P305/P304 的结果相符；修正接线后，在保留 DTC 的配置下测试成功，没有证据要求修复 SCI6/DTC 驱动。仍不由此次结果断言所有板卡的丝印位置、箭头含义或版本差异。日志中的 `: command not found.` 是两项测试之间的 shell 提示，来源未确认；后续合法命令已执行并通过，不作为 SPI 失败。
+
+本次只验证两组 MOSI/MISO 外接回环，不覆盖真实 SPI 从设备的协议响应、外部片选/时钟引脚连通性或最高速率。下一步断电拆除 Pmod 回环跳线，将 Arduino 扩展排母上丝印 P512（MOSI/D11）和 P511（MISO/D12）短接，执行 `hmi_test pmod-arduino`。此次仅更新文档，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -1058,7 +1089,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未完成外接条件验证 | `can-bus`、`pmod-arduino/irq0/irq1` 待对端或接线；`pmod-spi0` 接线检查失败后待移线复测。ADC low/high、GPIO loop、Pmod SPI1 已在 2026-10-01 用户复测通过，见上方日志 |
+| 未完成外接条件验证 | `can-bus`、`pmod-arduino/irq0/irq1` 待对端或接线。ADC low/high、GPIO loop、Pmod SPI0/SPI1 已在 2026-10-01 用户复测通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
