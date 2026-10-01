@@ -995,6 +995,24 @@ TEST IDLE
 
 本次仅更正接线指引和归档用户反馈，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：Pmod SPI1 回环及当前接线映射（2026-10-01）
+
+用户按指引保持此前跳线不动，改运行独立例程 `pmod-spi1`，提供以下日志：
+
+```text
+msh >hmi_test pmod-spi1
+TEST BEGIN pmod-spi1
+msh >PMOD spi1 MOSI/MISO loop 8x64 bytes MATCH
+TEST RESULT pmod-spi1 PASS code=0 elapsed=16 ms
+TEST IDLE
+```
+
+结论：SCI7 / P613 MOSI / P614 MISO 的 SPI1 回环验收通过。1 MHz 下八组 64 字节（共 512 字节）逐字节匹配，耗时 16 ms，正常退出。结合保持接线的用户对照操作，可确认当前跳线使 P613/P614 这组信号回环成功；此前 SPI0 的 P305 输出低而 P304 读高，与当前接在另一组信号上的结果相符，不能据此判断 SCI6 或 DTC 故障。
+
+更新接口定位：当前成功接线对应软件命令 pmod-spi1，不再仅凭用户所述 PMOD0 箭头或“靠无线模块”的相对位置指定软件端口。丝印/箭头与参考图之间的差异尚未查明，不声称板卡标错或具体硬件版本不同。
+
+下一步断电，把跳线移至另一个 Pmod 接口的 MOSI/MISO（按该口标识核对，保持两脚相邻的接法），拆除当前这组跳线；上电执行 `hmi_test pmod-spi0`。其低速检查应先读回 0/1/0/1，再进行 SPI 字节校验。SPI1 通过不替代 SPI0 验收。此轮未修改或烧录固件、未打开 COM8，只归档结果及更新指引；文档经 `git diff --check` 检查后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -1040,7 +1058,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未执行外接条件验证 | `can-bus`、`pmod-spi0/spi1/arduino/irq0/irq1`：缺少已确认的对端或跳线；ADC low/high、GPIO loop 已在 2026-10-01 用户复测通过，见上方日志 |
+| 未完成外接条件验证 | `can-bus`、`pmod-arduino/irq0/irq1` 待对端或接线；`pmod-spi0` 接线检查失败后待移线复测。ADC low/high、GPIO loop、Pmod SPI1 已在 2026-10-01 用户复测通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
