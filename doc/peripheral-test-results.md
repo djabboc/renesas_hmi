@@ -453,6 +453,21 @@ TEST IDLE
 
 修复版构建 0 错误、0 警告，17 项主机回归通过，DAP-LINK 烧录完成，记录见 `logs/sd-card-detect-fix-build.log`。修复后的插卡检测、介质初始化和扇区读取待用户复验；文件写入阶段尚未验收。本次助手未打开 COM8、未执行卡写入。
 
+### TF 卡检测与信息修复复验通过
+
+用户在修复固件 `e1bb9a3` 上执行 `hmi_test sd-info`，日志如下：
+
+```text
+msh >hmi_test sd-info
+TEST BEGIN sd-info
+SD P405 detect=1 (1=inserted, 0=absent)
+SD sectors=15613952 bytes/sector=512 clock=30000000 protected=0
+TEST RESULT sd-info PASS code=0 elapsed=41 ms
+TEST IDLE
+```
+
+本项验收通过：P405 实际检测到插卡，SDHI 介质初始化成功，容量为 15613952×512=7994343424 字节（约 7.99 GB / 7.45 GiB），扇区大小为 512 字节，报告时钟 30MHz、写保护标志为 0，41ms 后正常退出。旧例程误读 SDHI 专用 CD 导致的无卡判断问题，在本次插卡路径上已复验解决；修复版无卡路径尚待拔卡复测。此项不验证扇区内容或文件系统，下一步继续 `sd-read`。本次仅归档用户日志，未打开 COM8、未执行卡写入。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
