@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /**
  * @file test-graphics-jpeg.c
- * @brief 验证片上 JPEG 硬件解码。
+ * @brief 验证片上 JPEG 硬件解码，并在 LCD 显示解码结果。
  *
- * 内嵌 16×16 灰色 JPEG；验证尺寸、完成事件及 RGB565 输出，不依赖 SD 或屏幕。
+ * 内嵌 16×16 灰色 JPEG；先检查全部像素，再显示原尺寸与 10 倍放大图。
+ * 不依赖 SD；显示 15 秒后熄屏，视觉效果由用户确认。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
  * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
  */
@@ -83,11 +84,173 @@ static const unsigned char test_jpeg[] BSP_ALIGN_VARIABLE(8) = {
     0x00, 0xa0, 0x02, 0x80, 0x0a, 0x00, 0xff, 0xd9};
 
 #define GRAPHICS_TIMEOUT_MS 1000u
+#define JPEG_SIDE_PIXELS 16u
+#define LCD_HEIGHT_PIXELS 272u
+#define LCD_OBSERVE_MS 15000u
+#define LCD_ENABLE_PIN BSP_IO_PORT_01_PIN_05
+#define LCD_BACKLIGHT_PIN BSP_IO_PORT_01_PIN_00
 /* 输入与输出按八字节对齐，供 JPEG 硬件直接访问。 */
 
 static uint16_t output_pixels[16 * 16] BSP_ALIGN_VARIABLE(8);
 static uint8_t jpeg_input_buffer[4096] BSP_ALIGN_VARIABLE(8);
 static volatile jpeg_status_t jpeg_events;
+
+/* GLCDC 会保留配置指针；用静态对象保证关闭超时后指针仍然有效。 */
+static display_cfg_t display_config;
+static volatile unsigned lcd_frames;
+
+/* 中断只记数，像素绘制与结果判断都由测试线程完成。 */
+static void display_event(display_callback_args_t *arguments)
+{
+    if (arguments->event == DISPLAY_EVENT_LINE_DETECTION)
+    {
+        ++lcd_frames;
+    }
+}
+
+/* 使用生成配置的行跨度定位像素；行跨度可能包含对齐填充。 */
+static void fill_rectangle(unsigned left, unsigned top, unsigned width,
+                           unsigned height, uint16_t color)
+{
+    uint16_t *pixels = (uint16_t *)fb_background[0];
+    for (unsigned y = top; y < top + height; ++y)
+    {
+        for (unsigned x = left; x < left + width; ++x)
+        {
+            pixels[y * DISPLAY_BUFFER_STRIDE_PIXELS_INPUT0 + x] = color;
+        }
+    }
+}
+
+/* 最近邻放大：把一个解码像素复制为 scale×scale 的小方块。
+ * 灰色来自硬件解码输出，白边仅用于在黑色背景上标出图像范围。 */
+static void draw_decoded_image(unsigned left, unsigned top, unsigned scale)
+{
+    unsigned side = JPEG_SIDE_PIXELS * scale;
+    fill_rectangle(left - 2, top - 2, side + 4, side + 4, 0xffff);
+    for (unsigned y = 0; y < JPEG_SIDE_PIXELS; ++y)
+    {
+        for (unsigned x = 0; x < JPEG_SIDE_PIXELS; ++x)
+        {
+            uint16_t color = output_pixels[y * JPEG_SIDE_PIXELS + x];
+            fill_rectangle(left + x * scale, top + y * scale, scale, scale, color);
+        }
+    }
+}
+
+/* Stop 提交停扫请求，Close 等待帧边界后释放外设；各等待最多 100ms。 */
+static int close_display(void)
+{
+    fsp_err_t error;
+    rt_tick_t start = rt_tick_get();
+    do
+    {
+        error = R_GLCDC_Stop(&g_display0_ctrl);
+        if (error == FSP_SUCCESS)
+        {
+            break;
+        }
+        rt_thread_mdelay(1);
+    } while (!test_elapsed(start, 100));
+
+    start = rt_tick_get();
+    do
+    {
+        error = R_GLCDC_Close(&g_display0_ctrl);
+        if (error == FSP_SUCCESS)
+        {
+            return TEST_PASS;
+        }
+        rt_thread_mdelay(1);
+    } while (!test_elapsed(start, 100));
+
+    rt_kprintf("JPEG LCD close=%d; reset before further display tests\n", error);
+    return -RT_ERROR;
+}
+
+/* 解码校验成功后才打开屏幕；退出时关闭背光、电源使能及 GLCDC。 */
+static int show_decoded_image(void)
+{
+    int result = -RT_ERROR;
+    int display_open = 0;
+    rt_tick_t start;
+
+    /* 直接配置这两个引脚，避免重新打开整张 IOPORT 引脚配置表。
+     * P105 是共用电源/背光使能；P100 高电平提供固定全亮背光。 */
+    if (R_IOPORT_PinCfg(&g_ioport_ctrl, LCD_ENABLE_PIN,
+                       IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW) != FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
+    if (R_IOPORT_PinCfg(&g_ioport_ctrl, LCD_BACKLIGHT_PIN,
+                       IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW) != FSP_SUCCESS)
+    {
+        return -RT_ERROR;
+    }
+
+    /* 先完成整幅画面，再启动扫描，避免观察到填充过程。 */
+    memset(fb_background[0], 0, DISPLAY_BUFFER_STRIDE_BYTES_INPUT0 * LCD_HEIGHT_PIXELS);
+    draw_decoded_image(112, 128, 1);
+    draw_decoded_image(240, 56, 10);
+
+    /* ST7282 模组已验收的时序；总周期包含有效像素和消隐区。 */
+    display_config = g_display0_cfg;
+    display_config.output.htiming.total_cyc = 531;
+    display_config.output.htiming.back_porch = 43;
+    display_config.output.htiming.sync_width = 2;
+    display_config.output.vtiming.total_cyc = 292;
+    display_config.output.vtiming.back_porch = 12;
+    display_config.output.vtiming.sync_width = 2;
+    display_config.p_callback = display_event;
+    lcd_frames = 0;
+    if (R_GLCDC_Open(&g_display0_ctrl, &display_config) != FSP_SUCCESS)
+    {
+        goto display_done;
+    }
+    display_open = 1;
+    if (R_GLCDC_Start(&g_display0_ctrl) != FSP_SUCCESS)
+    {
+        goto display_done;
+    }
+    rt_thread_mdelay(150);
+    if (R_IOPORT_PinWrite(&g_ioport_ctrl, LCD_ENABLE_PIN, BSP_IO_LEVEL_HIGH) != FSP_SUCCESS)
+    {
+        goto display_done;
+    }
+    rt_thread_mdelay(10);
+    if (R_IOPORT_PinWrite(&g_ioport_ctrl, LCD_BACKLIGHT_PIN, BSP_IO_LEVEL_HIGH) != FSP_SUCCESS)
+    {
+        goto display_done;
+    }
+    rt_kprintf("JPEG LCD: black background, white borders; left=16x16 right=160x160 gray\n");
+    rt_kprintf("JPEG LCD: decoded pixels verified; observe for 15 seconds\n");
+    start = rt_tick_get();
+    while (!test_elapsed(start, LCD_OBSERVE_MS) && !test_cancelled())
+    {
+        rt_thread_mdelay(20);
+    }
+    rt_kprintf("JPEG LCD: frames=%u; visual confirmation required\n", lcd_frames);
+    if (lcd_frames > 0)
+    {
+        result = TEST_WAIT;
+    }
+
+display_done:
+    /* 即使显示失败也保持屏幕关闭；下一例程自行初始化所需引脚。 */
+    if (R_IOPORT_PinWrite(&g_ioport_ctrl, LCD_BACKLIGHT_PIN, BSP_IO_LEVEL_LOW) != FSP_SUCCESS)
+    {
+        result = -RT_ERROR;
+    }
+    if (R_IOPORT_PinWrite(&g_ioport_ctrl, LCD_ENABLE_PIN, BSP_IO_LEVEL_LOW) != FSP_SUCCESS)
+    {
+        result = -RT_ERROR;
+    }
+    if (display_open && close_display() != TEST_PASS)
+    {
+        result = -RT_ERROR;
+    }
+    return result;
+}
 
 /* JPEG 中断累积尺寸就绪、解码完成和错误事件，线程负责判定。 */
 static void jpeg_event(jpeg_callback_args_t *arguments)
@@ -173,7 +336,14 @@ jpeg_done:
                decoded_lines,
                jpeg_events,
                output_pixels[0]);
-    R_JPEG_Close(&g_jpeg0_ctrl);
+    if (R_JPEG_Close(&g_jpeg0_ctrl) != FSP_SUCCESS)
+    {
+        result = -RT_ERROR;
+    }
+    if (result == TEST_PASS && !test_cancelled())
+    {
+        result = show_decoded_image();
+    }
     return result;
 }
 
