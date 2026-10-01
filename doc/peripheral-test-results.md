@@ -9,9 +9,28 @@
 | 尚未覆盖 | 已有证据与边界 |
 | --- | --- |
 | RTC长期精度 | 短时走时、闹钟已通过；现有例程会重设测试时间，不提供长期误差测量 |
-| JPEG到LCD联合显示 | JPEG像素检查及G2D内存绘图已通过；graphics-jpeg 已补充原图/放大图显示，待用户验收；G2D仍仅验证内存 |
+| JPEG到LCD联合显示（已补齐） | 用户确认显示成功；16×16/16行、pixel=8410、frames=974、15211 ms，正常退出；G2D仍仅验证内存 |
 
 USB收尾已由后续日志补齐：128字节跨包回显一致，运行中一次物理拔插后重新枚举并回显成功。当前BLE也已补齐：首轮连接并收到断开事件，第二轮重新运行后再次连接成功。音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
+
+## JPEG 到 LCD：用户验收通过（2026-10-01）
+
+用户明确反馈“显示成功”，提供固件 `7d15f5b` 对应命令的完整日志：
+
+```text
+msh >hmi_test graphics-jpeg
+TEST BEGIN graphics-jpeg
+msh >JPEG 16x16 lines=16 status=A1 pixel=8410
+JPEG LCD: black background, white borders; left=16x16 right=160x160 gray
+JPEG LCD: decoded pixels verified; observe for 15 seconds
+JPEG LCD: frames=974; visual confirmation required
+TEST RESULT graphics-jpeg WAIT code=1 elapsed=15211 ms
+TEST IDLE
+```
+
+尺寸、解码行数和全像素检查通过，GLCDC 行检测回调计数 974，显示观察后正常退出。结合用户视觉确认，关闭 JPEG 到 LCD 联合显示待办。程序 WAIT 保留其“等待人工观察”的语义，文档记录人工验收通过，不修改程序结果为自动 PASS。15211 ms 包含主动观察时间，不是 JPEG 解码耗时；灰色固定图不证明彩色通道顺序、其他 JPEG 格式或大图处理均正确。
+
+本轮仅归档日志和更新验收状态，没有修改固件、重新烧录或打开 COM8。
 
 ## JPEG 到 LCD：补充显示阶段，待人工验收（2026-10-01）
 
