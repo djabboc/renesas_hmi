@@ -312,6 +312,31 @@ TEST IDLE
 
 日志确认 RGB565 显示初始化、19200 字节绘图缓冲、更新与刷新计数持续增长，并在约 60 秒后正常退出。最后一条周期日志为 updates=550/flushes=1715，不将其当作退出时最终计数；flushes 是刷新回调次数，不等同于完整帧数或 FPS。WAIT 的人工观察要求已由用户确认补齐。本例不接入触摸，触摸控件由下一项 `lcd-touch-lvgl` 单独验收。本次助手未打开 COM8。
 
+## 用户逐项验收：LVGL 触摸控件（2026-10-01，待补充确认）
+
+当前固件为 `5193620`。用户提供 `hmi_test lcd-touch-lvgl` 日志，尚未提供五项操作的目视结论。关键日志节选如下，省略重复 DOWN/UP 和 RESET 输出：
+
+```text
+msh >hmi_test lcd-touch-lvgl
+TEST BEGIN lcd-touch-lvgl
+TOUCH-LVGL: GT911 at 0x14, range=480x272
+TOUCH-LVGL: ready, color buttons / switch / slider / RESET
+TOUCH-LVGL: color=GREEN clicks=1
+TOUCH-LVGL: color=RED clicks=2
+TOUCH-LVGL: color=GREEN clicks=3
+TOUCH-LVGL: level=42
+TOUCH-LVGL: color=BLUE clicks=4
+TOUCH-LVGL: RESET blue enabled level=50 clicks=0
+TOUCH-LVGL: level=29
+TOUCH-LVGL: RESET blue enabled level=50 clicks=0
+TEST RESULT lcd-touch-lvgl WAIT code=1 elapsed=60015 ms
+TEST IDLE
+```
+
+已确认初始化成功、三种颜色按钮事件、滑块松手值 42/29、RESET 默认状态日志，以及约 60 秒后正常退出。原始日志多次出现 RESET，每次前面均有 DOWN/UP；用户未说明是否逐次主动点击，因此不据此判断误触或重复触发。
+
+待确认：预览颜色与 RESET 的实际画面、开关 OFF/恢复（本段无 enabled=0/1）、滑块能否到达 0/100 及跟手和松手稳定性、双指主触点先抬起时 WAIT 和全部松开后 UP/N=0。不能把返回 WAIT 当作整项通过。助手本次仅归档日志，未打开 COM8、未修改固件。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
