@@ -536,6 +536,23 @@ TEST IDLE
 
 TF 卡本轮基础验收完成，覆盖卡信息、扇区重复读取、文件写入/重新挂载读回、无卡判断与空闲插回恢复。卡上保留 HMI00.TST、HMI01.TST 两个测试文件。未测试写入中拔卡、掉电恢复、全卡扫描或长期寿命。本次仅归档用户日志，助手未打开 COM8。
 
+## 用户逐项验收：系统 USB 枚举未完成（2026-10-01）
+
+当前固件为 `e1bb9a3`。用户通过 Type-C 连接安卓手机后执行 `usb-probe`：
+
+```text
+msh >hmi_test usb-probe
+TEST BEGIN usb-probe
+USB system connector VBUS=1; debug USB/COM8 is separate
+USB mounted_events=0 rx=0 tx_queued=0 tx_complete_events=0
+TEST RESULT usb-probe SKIP code=2 elapsed=5013 ms
+TEST IDLE
+```
+
+此项未通过：VBUS 输入读为高电平，但 5 秒内没有完成主机 SET_CONFIGURATION，不能由供电推断 USB 数据链路正常。用户仅补充连接端为安卓手机，具体型号、OTG 开关状态、USB 主机角色及手机提示仍未确认。CDC 数据回显尚未进入验收。
+
+只读检查确认：V3.1 系统 Type-C 的 CC1/CC2 各有 5.1kΩ 下拉，D+/D− 接至 MCU；工程配置 USB 时钟为 PLL 240MHz/5=48MHz，USBFS 中断使用向量 40，应用配置 P407 为 VBUS 功能，TinyUSB 配置 CDC 设备。尚未发现可直接归因的配置错误；这些静态检查不能代替实际枚举，也未证明手机、线材或固件任一方一定正常。下一步确认手机 OTG/主机模式及数据线，必要时改用电脑作对照。本次仅归档与检查，未修改固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
