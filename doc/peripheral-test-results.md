@@ -681,6 +681,32 @@ TEST IDLE
 
 目前 USB 基础枚举、文本及上述特殊二进制字节回显已通过，可以继续 RW007 独立例程验收。单次超过 64 字节的跨包传输、完整 0～255 字节集合、长时间压力、运行中拔插及安卓手机连接尚未验证，不据此宣称通过。无需为本次记录修改固件；未打开 COM8，文档使用 `git diff --check` 检查并提交。
 
+## 用户逐项验收：RW007 模块信息（2026-10-01）
+
+用户在当前固件上执行独立例程 `rw007-info`，提供如下日志：
+
+```text
+msh >hmi_test rw007-info
+TEST BEGIN rw007-info
+msh >RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 FFFFFFFF FFFFFFFF flags=FF
+RW007: command=0 result=0 bytes=0
+RW007: command=5 result=0 bytes=24
+INFO: firmware=RW007_2.1.0-a7a0d089-57
+RW007: command=4 result=0 bytes=32
+INFO: serial=rw007c745bb22fc584aa6ed30
+RW007: command=2 result=0 bytes=6
+INFO: Wi-Fi MAC=FC:58:4A:A6:ED:30 expected BLE name=RW007-ED30
+TEST RESULT rw007-info PASS code=0 elapsed=1874 ms
+TEST IDLE
+```
+
+结论：模块信息读取验收通过，耗时 1874 ms，正常回到 TEST IDLE。固件版本、序列号和 Wi-Fi MAC 与此前记录一致；`RW007-ED30` 是依据 MAC 推导的预期 BLE 名称，本项未验证实际广播。
+
+保留异常：模块启动阶段出现一次全 FF SPI 头，随后初始化及信息查询均成功。本次说明后续通信已恢复，不能据此宣称 SPI 无错误或已定位全 FF 的根因。Wi-Fi 扫描、联网和 BLE 扫描/广播仍需分别验收。
+
+下一步开启手机 2.4 GHz 热点，执行 `hmi_test rw007-wifi`，核对扫描结果是否包含用户热点。此阶段仅扫描，无需密码。本次只归档用户日志，未修改或烧录固件，未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
