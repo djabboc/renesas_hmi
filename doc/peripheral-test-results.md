@@ -1,3 +1,65 @@
+# 独立 MVP 重构回归（2026-10-01）
+
+当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
+
+## 构建与结构检查
+
+- RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
+- Flash 677944 字节，静态 RAM 468848 字节。全部 45 个线程入口均存在于 ELF；应用测试只有 `hmi_test` 一个 MSH 导出，无测试自动启动入口。
+- 主机回归 17 项通过：串口分块、失败/超时处理、错误命令、USB 字节比较、文件/线程/命令一一对应、无跨例程入口调用、测试中无 MSH/线程创建/自定义测试头，以及 hal_entry 的 SHA-256。
+- 新增脚本 `scripts/test_lifecycle.py` 验证动态线程生命周期，串口仅在有时限的测试批次中打开，退出即关闭。
+
+## 可自动断言的实机结果
+
+| 范围 | 本轮观察 |
+| --- | --- |
+| 网口 `eth-phy` | PASS，PHY ID `001C:C816` |
+| 网口 `eth-mac` / `eth-phyloop` | PASS，各核对 12/12 帧，覆盖 60、512、1514 字节 |
+| 网口 `eth-link` / `eth-lwip` | PASS；DHCP、DNS、TCP、HTTP 200 和正文 MATCH；lwIP → MAC → lwIP 连续切换通过 |
+| `can-loop` | PASS，500 kbit/s 内部收发校验 |
+| `audio-mic` | PASS，8192 帧 DMA 完成、左声道数据有变化；实际声学响应仍待说话/静音对照 |
+| `rtc-tick` / `rtc-alarm` | PASS，日期/秒计数与单次闹钟事件符合预期 |
+| `touch-info` | PASS，GT911、480×272 |
+| `graphics-g2d` / `graphics-jpeg` | PASS，像素、尺寸及完成事件校验 |
+| `rw007-info` / `rw007-wifi` / `rw007-ble` | PASS，固件查询、8 条 Wi-Fi 报告及 BLE 报告/扫描完成事件 |
+
+RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现象，不能宣称 SPI 零错误。
+
+## 线程退出、停止与资源回收
+
+- 原 256 字节 idle 栈在新 cleanup 日志路径中不足；调试时捕获并修复了调度锁内分配/打印断言及栈耗尽。最终改为短临界区撤销事件指针，解锁后释放/打印，并把 idle 栈设为 2048 字节，增加编译期最小栈检查。
+- 三个界面 `lcd-lvgl`、`lcd-touch-lvgl`、`lcd-touch` 各运行并停止 3 次，均初始化成功并完成清理。
+- 每次运行中连续发送另外两项测试请求，均被 BUSY 拒绝；停止后下一例程正常运行。主动停止记录 `FAIL code=-9`，属于已预期的取消结果，不当作功能通过。
+- 每次停止后的线程列表不再包含 `hmitest`。三个完整循环结束后可用堆均为 **171584 字节**，未观察到随启动次数增长的泄漏。首次 LVGL 初始化前可用堆为 175272 字节；差额为库初始化/缓存常驻占用。
+- idle 栈峰值为 15%；本轮基础/扩展批次观测到堆峰值 92880 字节。不存在常驻 `ptest` 工作线程。
+- 生命周期记录：`logs/mvp-lifecycle.log`；最终交付固件再次复跑同样 9 次 GUI 启停，三轮堆仍为 171584 字节，见 `logs/mvp-lifecycle-delivery.log`。基础记录：`logs/mvp-hardware-baseline-03.log`；扩展记录：`logs/mvp-hardware-extended.log`。失败修正前日志仅用于定位，不计入通过证据。
+
+## 待用户提供实物条件后验收
+
+| 状态 | 项目与原因 |
+| --- | --- |
+| WAIT | `gpio-led`、`gpio-inputs`、`gpio-keys`：需要观察 LED、实际按键操作 |
+| WAIT | `audio-tone`、`audio-replay`：播放采样数达到预期，声音内容/音质需试听 |
+| WAIT | `lcd-colors`、`lcd-backlight`、三个界面例程：程序和生命周期已检查，图像/触摸手感需目视操作 |
+| WAIT | `touch-points`、`touch-irq`：窗口内无人触摸，坐标和实际中断边沿需触摸复测 |
+| WAIT | `rw007-adv`：命令被接受并观察 15 秒，手机可发现性需手机扫描 |
+| WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
+| SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
+| SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
+| SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
+| 未执行外接条件验证 | `can-bus`、`gpio-loop`、`pmod-spi0/spi1/arduino/irq0/irq1`、`adc-low/high`：缺少已确认的对端、跳线或已知电压 |
+| 需重测 | `rw007-internet`：本轮接收运行时凭据并完成扫描，但未发现用户热点 `Hotspot`，返回 `FAIL code=-1` 并清理退出；不声明重构版 Wi-Fi 联网通过。此前联网验收保留在历史记录中 |
+
+热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
+
+最终烧录后再次验证提示音、录音回放、无卡信息路径和有线互联网访问，均符合 PASS/WAIT/SKIP 预期；见 `logs/mvp-delivery-smoke.log`。
+
+实物接线、运行方法见 `peripheral-tests.md`；全部文件阅读目录见 `peripheral-code-quality.md`。所有未满足条件项保留待验收，未用编译成功替代硬件结论。
+
+---
+
+## 重构前历史记录
+
 # 全外设测试实现与自测记录
 
 日期：2026-10-01。板卡：HMI-Board V3.1 / RA6M3。测试方式：RT-Thread Studio 构建、DAP-LINK/PyOCD 烧录、COM8 有时限命令采集。按本轮要求不等待中途人工验收，直接交付代码与文档。

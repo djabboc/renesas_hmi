@@ -9,6 +9,13 @@ def configure(project: Path) -> None:
     path = project / ".cproject"
     tree = ET.parse(path)
     root = tree.getroot()
+    for entry in root.findall(".//sourceEntries/entry"):
+        if entry.get("name") == "":
+            excluded = entry.get("excluding", "").split("|")
+            for folder in ("//logs", "//workspace", "//scripts"):
+                if folder not in excluded:
+                    excluded.append(folder)
+            entry.set("excluding", "|".join(excluded))
     folders = (
         "board",
         "third_party/tinyusb/src",

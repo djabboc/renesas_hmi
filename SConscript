@@ -15,7 +15,7 @@ if rtconfig.PLATFORM in ['iccarm']:
 elif rtconfig.PLATFORM in ['gcc', 'armclang']:
     if GetOption('target') != 'mdk5':
         CPPPATH = [cwd]
-        src = Glob('./src/*.c')
+        src = Glob('./src/*.c') + Glob('./src/test/*.c')
 
 network_root = os.path.join(cwd, 'rt-thread/components/net/lwip/lwip-2.1.2/src')
 CPPPATH += [os.path.join(cwd, 'board/rw007_net'), os.path.join(network_root, 'include')]

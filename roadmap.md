@@ -1,3 +1,5 @@
+> 2026-10-01 结构迁移：当前入口为 `src/test-main.c`，45 个例程位于 `src/test/test-*.c`。下文旧文件名、自动启动方式和命令是历史记录；当前用法以 `doc/peripheral-tests.md` 和 `doc/peripheral-code-quality.md` 为准。BLE 音乐任务继续取消，UART/遥控仍受固件限制。
+
 # HMI 示例开发路线图
 
 更新日期：2026-10-01
@@ -149,3 +151,12 @@
 - 自测：编译 0 错误、7 个停用入口警告，Flash 181356 字节、静态 RAM 69680 字节；烧录成功。串口获得 IP `192.168.9.97`、网关/DNS `192.168.9.251`；解析 `www.msftconnecttest.com` 得到 `23.205.151.10`，访问 `/connecttest.txt` 得到 HTTP 200，响应体匹配 `Microsoft Connect Test`。
 - 板上输出 `INTERNET PASS result=0`，以太网 tx=14、rx=13、drops=0；总 `pass_mask=0x5E fail_mask=0x00`。线程栈峰值 12%（8192 字节栈），可用堆 566096 字节，`malformed=0`。日志 `logs/internet_20261001_014725.log`；该次 COM8 持有约 10 秒，测试后已释放。
 - 这验证的是通过热点访问一个公网 HTTP 连通性端点，不等于 HTTPS、长期在线或全部互联网服务已验证。用户已确认验收通过，正式说明及使用方法见 `doc/rwoo7-demo.md`。
+
+
+### 2026-10-01：独立 MVP 结构重构
+
+- 保留 `src/hal_entry.c` 原文；MSH 集中到 `src/test-main.c`，45 项全部迁移到 `src/test/test-*.c`。
+- 一条有效测试命令创建一条新线程；测试间禁止重叠，例程内部无命令解析或线程创建，独立初始化/清理。
+- 统一风格和中文注释，拆分网口各阶段及其他外设阶段；LCD/LVGL 支持退出释放资源。
+- 已完成 Studio 构建、17 项主机回归及当前接线条件下板测；线程互斥/重复退出/堆稳定回归通过。
+- 最终交付记录及未满足实物条件的项目见 `doc/peripheral-test-results.md`。Wi-Fi 热点本轮不可见，联网正向路径待用户重新开启热点复测。

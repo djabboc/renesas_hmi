@@ -1,62 +1,106 @@
-# 外设测试代码可读性整改
+# 独立 MVP 测试代码结构
 
-日期：2026-10-01。触发原因：用户指出新测试代码语句压缩、可读性差、注释不足，要求先整改再继续实物验收。
+本轮按“一条测试命令、一条新线程、一个独立 C 文件”重构。旧版常驻 `ptest`、共享测试头文件和按阶段分派的大文件已移除。`src/hal_entry.c` 逐字节保留。
 
-## 阅读入口与职责
+## 从哪里开始阅读
 
-| 文件 | 职责与阅读顺序 |
-| --- | --- |
-| `src/peripheral-test.h` | 统一 PASS/WAIT/SKIP/负错误码语义，说明取消、tick 超时、引脚恢复和测试入口约束 |
-| `src/peripheral-test.c` | 命令解析 → 单槽请求投递 → 唯一工作线程执行 → 阶段结果记录；状态/帮助独立输出 |
-| `src/test-ethernet.c` | PHY 寄存器定义 → MAC 派生/控制器打开 → 链路等待 → 收发适配 → 身份/回环/联网校验 → 统一关闭 |
-| `src/test-sd.c` | SDHI 事件等待和 FatFs 磁盘适配 → 只读扇区比较 → 独占文件写入/重挂载读回 → 阶段分发 |
-| `src/test-can.c` | 中断收帧/计数 → 具名邮箱与位时序配置 → 有限等待 → 帧校验 → 关闭 |
-| `src/test-gpio.c` | LED、按键观察、GPIO 跳线回环分别使用独立函数 |
-| `src/test-adc.c` | 从 GPIO 模块独立出的 ADC 测试；定义采样数量、参考电压、端点误差和超时 |
-| `src/test-display.c` | 五色输出、帧边界 Stop/Close 与背光阶段；注释解释 stride 和开启/关闭顺序 |
-| `src/test-touch.c` | 从显示模块独立出的 GT911 测试；寄存器地址、数据就绪位、触点记录长度具名化，区分初始化和触点观察 |
-| `src/test-audio.c` | 采集、PWM 中断、播放与统计；解释时钟推导、24 位符号扩展、限幅及停止顺序 |
-| `src/test-pmod.c` | IRQ、I²C、SPI 各自独立，标明夹具要求、回调与配置生命周期 |
-| `src/test-graphics.c` | G2D 与 JPEG 独立；解释 RGB565 校验、预取缓冲、DMA 超时保留内存的原因 |
-| `src/test-rtc.c` | 解释晶振稳定等待、日历字段表示、闹钟匹配和中断向量对应关系 |
-| `src/test-usb.c` | 描述符/中断 → 枚举等待 → 有限回显 → 关闭；区分排队发送与主机内容校验 |
-| `src/rwoo7-demo.c` | 展开压缩语句，补全套件同步适配入口的互斥、观察窗口和关闭说明 |
-| `scripts/test_peripherals.py` | 参数检查、就绪检查、单项执行、USB 主机比对、资源采集分别为独立函数 |
-| `scripts/serial_test_port.py` | 明确 Win32 函数签名、115200/8N1 配置、读写时限及异常路径句柄关闭 |
-| `scripts/select_example.py` | 目标存在性检查 → 切换入口 → 检查唯一有效入口 |
+- `src/test-main.c`：唯一 MSH 接口，只负责参数校验、线程创建、互斥、停止和结果汇总。
+- `src/test/test-<设备>-<功能>.c`：每个文件只有一个公开的 `test_..._thread(void *argument)` 线程入口。先读文件末尾入口，再读 `run_test()`，最后按调用关系读本文件的辅助函数。
+- 测试内部没有 MSH/FINSH 导出、命令解析、`INIT_APP_EXPORT` 或 `rt_thread_create`。
+- 每个文件自行准备配置、打开外设、验证、关闭资源；没有其他测试文件的函数、变量或执行顺序依赖。
+- 没有自定义测试 `.h`。RT-Thread、FSP、LVGL、lwIP、FatFs、TinyUSB 的正式库头文件仍是编译依赖。硬件配置取自本工程 FSP 生成配置，不声称能脱离 BSP 直接编译。
 
-## 维护约定
+## 线程生命周期
 
-- 使用四空格缩进、独立括号、完整控制分支；一行不堆叠多个执行语句。
-- 用变量名表达用途：例如 `received_frame`、`playback_position`、`file_open`；使用带单位的超时/速率常量。
-- 文件注释说明外设、依赖与测试边界；函数/局部注释解释硬件时序、异步缓冲生命周期、判定依据和清理原因。
-- `goto` 只用于跳到本函数对应的资源清理点；硬件打开成功后，正常/失败路径均需审查关闭顺序。
-- 维持已有 MSH 命令和串口结果标记，便于与之前的验收日志对照。
-- 不对 FSP、TinyUSB、FatFs、LVGL 等供应商源码做全库格式化。根 `.clang-format` 供手写应用代码使用。
+1. MSH 查表并检查参数；未知命令、错误参数和 BUSY 不创建线程。
+2. 入口先保留独占状态，再创建停止事件及新的 `hmitest` 线程，使用 12 KB 栈、优先级 21。
+3. `argument` 是可选 RT-Thread 事件对象。bit0 表示协作停止；传 NULL 时测试仍可独立运行。例程只把它当普通运行参数，不认识串口命令。
+4. 测试先关闭自己打开的外设，再把结果写到当前线程的 `error` 字段并自然返回。
+5. 内核将退出线程交给 idle 回收。`test-main.c` 的 cleanup 回调在测试已退出后记录结果、释放停止事件，最后解除 BUSY。其他测试无法在硬件清理期间进入。
+6. 空闲时没有 `hmitest` 常驻线程。`help/status/stop` 是管理命令，不创建测试线程。固件不提供 `all`，批次由主机脚本逐条发命令完成。
 
-格式与脚本回归工具版本：clang-format 18.1.8、Black 24.10.0。格式工具只参与开发检查，不是固件构建依赖。
+回收回调需要输出结果和释放 IPC 对象，原工程 idle 的 256 字节栈不足，本轮将 `IDLE_THREAD_STACK_SIZE` 改为 2048。堆释放和串口输出不能放在调度锁内；只用很短的临界区撤销共享指针与更新占用状态。恢复 RT-Thread Settings 时应保留该栈配置。
 
-```powershell
-$testSources = @(Get-ChildItem src/test-*.c,src/test-*.h,src/peripheral-test.c,src/peripheral-test.h,src/rwoo7-demo.c | ForEach-Object FullName)
-clang-format --dry-run --Werror $testSources
-python -m black --check --line-length 100 scripts/test_peripherals.py scripts/serial_test_port.py scripts/select_example.py scripts/configure_peripheral_tests.py scripts/tests/test_peripheral_tools.py
-python -m unittest discover -s scripts/tests -v
-python scripts/build_flash.py --build-only
-```
+RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传递 SSID、密码指针数组。主入口负责长度检查和参数生命周期；测试文件负责复制、使用、清空自己的工作缓冲。源码不保存热点密码。独立移植此例程时按同样格式传入即可。
 
-## 验证记录
+## 独立性与平台接口
 
-- 最终 Studio 构建及 PyOCD 烧录成功，0 errors / 8 warnings；8 个警告均为停用例程入口未使用。
-- Flash 298408 B（整改前 298076 B），静态 RAM 355424 B（与整改前相同）。
-- 11 项主机回归测试通过：串口分块结束标记、FAIL/WAIT/SKIP 判定、忙拒绝、超时取消、就绪标记、USB 缺少枚举/内容不符、二进制字节比较、所有 profile 的唯一入口及重复执行、目标缺失保护。
-- clang-format/Black 检查、Python 语法检查、UTF-8 检查通过；JPEG 夹具字节与整改前完全一致。
-- 源码与 ELF 均确认唯一应用初始化入口为 `peripheral_test_start`。
-- 构建日志：`logs/readability-build-final.log`。主机测试使用内存串口/临时目录，不代替硬件验收。
-- 用户释放 COM8 后，`hmi_test all`、PHY 回环、lwIP、JPEG、RTC 闹钟回归完成，无非预期 FAIL。网口再次取得 `192.168.0.102`，100Mbps 全双工，HTTP 200、正文匹配，tx=13/rx=8/drops=0。
-- RTC 闹钟恰好 1 次；G2D/JPEG 像素比对通过；CAN 内部回环、麦克风采集、GT911 身份、RW007 信息通过。LCD/LED/悬空 ADC 为 WAIT；TF 无卡、系统 USB 未枚举为 SKIP，不能当作验收通过。
-- 本批线程栈峰值：ptest 7% / 12288 B；堆可用 276256 B、峰值使用 89144 B。日志：`logs/peripherals_20261001_141723.log`，采集结束已释放 COM8。
-- 补充阶段：背光阶梯完成且正常退出；提示音 8000/8000、回放 8192/8192；Wi-Fi 扫描 8 条、BLE 扫描 3 条 PASS。按键空闲电平 WAIT、外部 I²C 无设备 SKIP。补测后可用堆仍为 276256 B，日志 `logs/peripherals_20261001_141821.log`。
-- 调度器实板回归：触点窗口运行期间投递 RTC 被 `TEST BUSY` 拒绝；发送 stop 后在本次总耗时 203 ms 时退出，输出 `FAIL code=-9`（预期的 RT_EINTR 取消结果）；随后触摸身份测试 PASS，状态恢复 `busy=0 cancel=0`。日志 `logs/readability-dispatch-regression.log`。该主动取消记录不是未解决的外设故障。
-- 所有采集结束均关闭 COM8。未插 TF 卡、未枚举的系统 USB、无对端/跳线的 CAN 总线和扩展口仍需后续实物验收。
+可重复的初始化、超时和引脚恢复辅助函数保留在各个 C 文件里，优先方便逐文件学习。未通过共享测试框架隐藏硬件操作。所有库回调只能保留一个全局符号的位置放到平台层：
 
-之前网口验收结果继续保留在 `peripheral-test-results.md`；重构版的硬件回归须另记，不以旧固件验收代替。
+| 文件 | 职责 | 不包含的内容 |
+| --- | --- | --- |
+| `board/lwip-runtime.c` | RT-Thread 时间/随机数适配、一次性初始化 raw lwIP 内存池和协议定时器 | 网卡配置、DHCP/HTTP 测试流程、测试线程 |
+| `board/usb-runtime.c` | 将 TinyUSB 固定回调符号和 USB 中断转发到当前注册应用 | 设备描述符、回显逻辑、测试结果 |
+| `board/fatfs-engine.c` | 只编译已有 FatFs 引擎 | 磁盘适配、文件测试逻辑 |
+
+以太网与 RW007 联网的应用逻辑分别完整保留在各自单文件中；每次创建/注销自己的网卡。USB probe/echo 各自包含描述符和初始化、回调、清理。TF 原始扇区例程直接使用 FSP，不依赖 FatFs；文件例程自行提供 FatFs 磁盘回调。
+
+## 编码约定
+
+- 统一 Allman 大括号、4 空格缩进、约 100 列、单条语句一行；所有条件分支展开，不使用三目运算符和链式赋值。
+- 每个文件开头写用途、接线/前提和阅读顺序。辅助函数注释说明操作目的、异步完成条件及缓冲生命周期。
+- 中断回调只记录事件或复制短数据；线程执行等待、比较和打印。所有轮询等待有时间上限或固定迭代上限。
+- 错误路径与正常路径汇合清理；先停中断/DMA，再关闭外设和释放缓冲。
+- LCD/LVGL/绘画例程改为最多 60 秒，退出删除输入设备、对象、定时器，关闭 GLCDC。静态持有 LVGL 软件绘图上下文，避免反复注册/注销显示的分配遗留。
+- SD 文件使用 `FA_CREATE_NEW`，保留测试文件，不格式化、不覆盖用户已有文件。
+- G2D 硬件超时可能仍引用 DMA 内存，保留该内存并要求复位；不冒险释放后继续操作。
+
+## 文件与命令目录
+
+以下每行都是一个可直接运行的独立例程，递进关系只用于学习，不是执行依赖。命令前统一加 `hmi_test `；文件位于 `src/test/`，名为 `test-<命令>.c`。
+
+| 命令 | 单一验证目的 | 环境与边界 |
+| --- | --- | --- |
+| `adc-high` | 验证 ADC 接近满量程的读数。 | A0/P000 接 3.3 V，禁止接 5 V；32 次采样均应高于 3995 LSB。 |
+| `adc-low` | 验证 ADC 接近零电压的读数。 | A0/P000 接 GND；32 次采样均应低于 100 LSB；结束恢复引脚。 |
+| `adc-sample` | 报告 Arduino A0 的 ADC 原始采样值。 | A0/P000 对应 ADC0 通道 0；采样 32 次；悬空读数不能证明精度。 |
+| `audio-mic` | 验证 SSI0/DTC 麦克风采样链路。 | GPT1 提供采样时钟；采集左声道，统计幅度和变化数；声音质量仍需实际发声确认。 |
+| `audio-replay` | 独立完成麦克风录音和扬声器回放。 | 本次先采集再回放，不依赖其他例程的录音；先停 DMA/定时器再释放缓冲。 |
+| `audio-tone` | 通过 GPT6 差分 PWM 播放固定提示音。 | GPT2 按采样率更新占空比；播放约半秒后关闭两个定时器，结果等待试听。 |
+| `can-bus` | 验证 CAN0 和 XL2551 的外部总线收发。 | 接 500 kbit/s 对端及共地；对端收到 0x321 后用 0x322 回复相同 8 字节。 |
+| `can-loop` | 验证 CAN0 内部回环收发。 | 无需对端；500 kbit/s，邮箱发送 0x321 并比对数据，不验证外部收发器。 |
+| `eth-link` | 验证外部网线链路协商。 | 接路由器 LAN；等待最多 6 秒，报告速率/双工；无网线返回 SKIP。 |
+| `eth-lwip` | 独立验证有线 DHCP、DNS、TCP 和 HTTP 联网。 | 接可上网的路由器 LAN；只有 HTTP 200 且正文匹配才通过。 |
+| `eth-mac` | 验证以太网 MAC 内部回环。 | 无需网线；固定 100M 全双工，发送并逐字节比对 12 帧，结束恢复自动协商。 |
+| `eth-phy` | 通过 MDIO 读取 RTL8201F 身份寄存器。 | 无需网线；复位 PHY、打开 MAC 的管理接口、读取 ID、关闭控制器。 |
+| `eth-phyloop` | 验证 MAC 到 PHY 的数字回环链路。 | 无需网线；设置 PHY 的 BMCR 回环位，比较三种长度的帧，结束关闭回环。 |
+| `gpio-inputs` | 读取三个用户按键的当前电平。 | P005/P006/P007 上拉输入，按下为 0；只报告当前状态。 |
+| `gpio-keys` | 观察三个按键的消抖、按下和释放。 | 15 秒内操作三个按键；5 ms 采样、连续四次一致确认，800 ms 区分长短按。 |
+| `gpio-led` | 依次翻转板载三个 LED。 | P209/P210 低有效、P204 高有效；输出序列后恢复引脚，亮灭效果需要目视验收。 |
+| `gpio-loop` | 验证 Arduino 数字引脚输出到输入的回环。 | D2/P008 经 1 kΩ 接 D9/P009；翻转 16 次并逐次读回。 |
+| `graphics-g2d` | 验证 D/AVE 2D 硬件填色。 | 在 16×16 缓冲画红底绿框并逐像素比对；DMA 超时保留内存并要求复位。 |
+| `graphics-jpeg` | 验证片上 JPEG 硬件解码。 | 内嵌 16×16 灰色 JPEG；验证尺寸、完成事件及 RGB565 输出，不依赖 SD 或屏幕。 |
+| `lcd-backlight` | 验证 ST7282 背光 PWM 明暗变化。 | 先建立 RGB 时序，再切换 P100 为 GPT5 PWM，按 0→100→0% 调光。 |
+| `lcd-colors` | 验证 ST7282 的 RGB565 五种纯色。 | 480×272；P105 共用电源/背光使能，P100 背光；结束熄屏并关闭 GLCDC。 |
+| `lcd-lvgl` | 验证 LVGL 标签、五色色块和进度条刷新。 | 每次自行创建显示及界面；运行 60 秒或收到停止事件后释放界面和定时器。 |
+| `lcd-touch` | 不用 LVGL 的 RGB565 多指绘画例程。 | 选择色块后画线，CLEAR 清屏；每指独立轨迹，抬手断线；60 秒后清理退出。 |
+| `lcd-touch-lvgl` | 验证 GT911 触摸与 LVGL 控件联动。 | 色彩按钮、开关、滑块、RESET；滑块值实时变化，大预览松手更新；60 秒后退出。 |
+| `pmod-arduino` | 验证 Arduino SCI4 的 SPI 收发回环。 | D11/P512 接 D12/P511；1 MHz，比较八组 64 字节变化载荷。 |
+| `pmod-i2c` | 只读探测外部 I2C 夹具地址 0x50。 | 使用 I2C1，与 GT911 共用总线；夹具必须兼容当前地址单字节读；无响应返回 SKIP。 |
+| `pmod-irq0` | 验证 Pmod0 GPIO 到外部中断的回环。 | J1 pin8/P211 经 1 kΩ 接 pin7/P708；翻转 16 次，检查双边沿计数。 |
+| `pmod-irq1` | 验证 Pmod1 GPIO 到外部中断的回环。 | J2 pin8/P710 经 1 kΩ 接 pin7/P709；翻转 16 次，检查双边沿计数。 |
+| `pmod-spi0` | 验证 Pmod0 SCI6 的 SPI 收发回环。 | J1 pin2/P305 接 pin3/P304；1 MHz，比较八组 64 字节变化载荷。 |
+| `pmod-spi1` | 验证 Pmod1 SCI7 的 SPI 收发回环。 | J2 pin2/P613 接 pin3/P614；1 MHz，比较八组 64 字节变化载荷。 |
+| `rtc-alarm` | 验证 RTC 定时闹钟中断。 | 本次自行初始化日期，设置第 2 秒闹钟并要求只触发一次。 |
+| `rtc-tick` | 验证 32.768 kHz 晶振驱动的 RTC 走时。 | 写固定测试日期并检查秒计数；会覆盖日历，不测试断电保持。 |
+| `rw007-adv` | 验证 RW007 广播命令及手机可发现性。 | 复位后广播 15 秒；名称通常为 RW007-xxxx；命令接受不等于手机已发现，返回 WAIT。 |
+| `rw007-ble` | 验证 RW007 的 BLE 扫描能力。 | 查询 BLE 地址并扫描广播；协议异步完成后核对报告数；不实现 BLE 串口。 |
+| `rw007-info` | 读取 RW007 固件版本、序列号和 MAC。 | 通过 SCI3 SPI 的两阶段协议访问模块；本次自行复位，查询后关闭模块。 |
+| `rw007-internet` | 独立连接 2.4 GHz 热点并验证互联网访问。 | 热点通过运行参数传入；独立完成扫描、关联、DHCP、DNS、HTTP，退出清除凭据。 |
+| `rw007-wifi` | 验证 RW007 的 2.4 GHz Wi-Fi 扫描。 | 查询附近 SSID、信道和 RSSI；仅扫描，不连接；没有收到报告时等待人工复查。 |
+| `sd-file` | 通过 FatFs 验证文件持久化读写。 | 需要 FAT16/32 卡；创建新的 HMIxx.TST，重挂载后比对 8192 字节；不格式化、不覆盖旧文件。 |
+| `sd-info` | 读取 TF 卡容量、扇区尺寸和写保护信息。 | 插入 TF 卡；本例只读取卡信息，不读写文件；无卡返回 SKIP。 |
+| `sd-read` | 只读验证 TF 卡原始扇区。 | 独立初始化 SDHI1，读取扇区 0 两次并比对，不改动卡内数据。 |
+| `touch-info` | 读取 GT911 型号和坐标范围。 | 独立复位 P801/P004，尝试 0x14/0x5D；要求型号 911、坐标范围 480×272。 |
+| `touch-irq` | 验证 GT911 的触摸中断及完整触点读取。 | P004 下降沿只做计数；线程负责 I2C 读帧并清就绪位；结束注销 IRQ。 |
+| `touch-points` | 轮询读取 GT911 多指触点。 | 15 秒内输出 ID 和坐标；完整读取后清就绪位，位置对应关系需手动确认。 |
+| `usb-echo` | 验证系统 USB CDC 的二进制回显。 | Con4 连接电脑；枚举后在新串口回显 30 秒，由主机逐字节比对。 |
+| `usb-probe` | 验证系统 USBFS 的 CDC 枚举。 | Con4 用数据线连接电脑；等待最多 5 秒；调试口 COM8 与系统 USB 独立。 |
+
+## 检查与回归
+
+构建：`python scripts/build_flash.py`。主机检查：`python -m unittest discover -s scripts/tests -v`。
+生命周期回归：`python scripts/test_lifecycle.py`，验证 BUSY、停止、界面反复创建/销毁及堆稳定。
+基础板测：`python scripts/test_peripherals.py`。脚本逐条创建测试，不执行固件 `all`，结束/异常都释放串口。
+
+结构检查覆盖文件/入口/命令一一对应、测试中没有 MSH 和线程创建、无自定义测试头文件、无跨例程入口调用，以及 `hal_entry.c` 的原始 SHA-256。实际板上结果与仍需外部接线的项目见 `peripheral-test-results.md`；编译和结构检查不能替代实物验收。

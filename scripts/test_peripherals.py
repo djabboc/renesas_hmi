@@ -23,7 +23,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--command",
         action="append",
-        help='e.g. "hmi_test eth mac"; repeat for sequential tests',
+        help='e.g. "hmi_test eth-mac"; repeat for sequential tests',
     )
     parser.add_argument(
         "--timeout", type=float, default=120, help="Per-command time limit, seconds"
@@ -32,7 +32,27 @@ def parse_arguments() -> argparse.Namespace:
     arguments = parser.parse_args()
     if not 1 <= arguments.timeout <= 300:
         parser.error("timeout must be 1..300")
-    arguments.command = arguments.command or ["hmi_test all"]
+    baseline = [
+        "eth-phy",
+        "eth-mac",
+        "eth-phyloop",
+        "sd-info",
+        "sd-read",
+        "can-loop",
+        "audio-mic",
+        "usb-probe",
+        "gpio-led",
+        "gpio-inputs",
+        "rtc-tick",
+        "rtc-alarm",
+        "adc-sample",
+        "lcd-colors",
+        "touch-info",
+        "graphics-g2d",
+        "graphics-jpeg",
+        "rw007-info",
+    ]
+    arguments.command = arguments.command or [f"hmi_test {name}" for name in baseline]
     for command in arguments.command:
         if not re.fullmatch(r"hmi_test [a-z0-9 -]+", command) or len(command) > 78:
             parser.error("Only hmi_test commands accepted")
@@ -40,7 +60,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def wait_for_ready(serial: SerialPort, record: Record) -> None:
-    """先确认调度线程就绪且空闲，再向单槽请求队列投递测试。"""
+    """先确认板卡空闲；随后每条命令都由板卡创建一条独立测试线程。"""
     serial.write(b"\rhmi_test status\r")
     started_at = time.monotonic()
     output = ""
@@ -84,6 +104,10 @@ def run_command(
         if usb_port and not echo_checked and "USB CDC configured" in output:
             echo_passed = verify_usb_echo(usb_port, record)
             echo_checked = True
+        if "assertion failed" in output or "HardFault" in output:
+            raise RuntimeError("Board fault; serial port will be released")
+        if "TEST UNKNOWN" in output or "TEST ERROR" in output:
+            raise RuntimeError("Board rejected the test command")
         if "TEST BUSY" in output:
             raise RuntimeError("Board rejected command as busy")
 
@@ -97,9 +121,11 @@ def run_command(
             f"{command} timed out; stop requested; COM released " "(reset if driver is stuck)"
         )
 
+    if command not in STATUS_COMMANDS and "TEST RESULT " not in output:
+        raise RuntimeError("Missing test result before IDLE")
     if re.search(r"TEST RESULT .* FAIL ", output):
         return False
-    if usb_port and command == "hmi_test usb echo":
+    if usb_port and command == "hmi_test usb-echo":
         return echo_checked and echo_passed
     return echo_passed
 
