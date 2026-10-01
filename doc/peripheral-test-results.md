@@ -337,6 +337,29 @@ TEST IDLE
 
 补充验收：助手明确询问颜色与 RESET 画面、多次 RESET 是否主动点击、开关 OFF/恢复、滑块 0/100 端点及跟手和松手稳定性、双指主触点先抬起时 WAIT 和全部松开后 UP/N=0，用户随后回复“正常！”。据此，本项五项交互人工验收通过，多次 RESET 未被用户报告为误触。开关、滑块端点和双指保护的结论依据为用户反馈，不表述为本段串口日志直接证明。设备 WAIT 的人工观察要求已补齐；助手本次仅归档日志，未打开 COM8、未修改固件。
 
+## 用户逐项验收：麦克风采样（2026-10-01）
+
+当前固件为 `5193620`。用户连续执行三次 `hmi_test audio-mic`，每次均完成 8192 个双声道帧采集，返回 PASS，耗时 539ms，并正常进入 TEST IDLE。用户尚未标注各次安静/发声条件，因此先确认采样链路通过，声学响应对照待补充。
+
+| 次序 | 左声道最小值 | 左声道最大值 | 峰峰值（max−min） | 相邻样本变化数 |
+| --- | --- | --- | --- | --- |
+| 1 | -563990 | 4732264 | 5296254 | 7819/8191 |
+| 2 | -856752 | 8265912 | 9122664 | 8179/8191 |
+| 3 | -845440 | 8370830 | 9216270 | 8181/8191 |
+
+三次关键输出如下，省略相同的命令、启动提示和退出提示：
+
+```text
+MIC DMA complete left min=-563990 max=4732264 changed=7819/8191; acoustic response needs speaking test
+TEST RESULT audio-mic PASS code=0 elapsed=539 ms
+MIC DMA complete left min=-856752 max=8265912 changed=8179/8191; acoustic response needs speaking test
+TEST RESULT audio-mic PASS code=0 elapsed=539 ms
+MIC DMA complete left min=-845440 max=8370830 changed=8181/8191; acoustic response needs speaking test
+TEST RESULT audio-mic PASS code=0 elapsed=539 ms
+```
+
+后两次峰峰值较第一次增大，但在用户确认发声条件之前，不将其直接解释为说话带来的变化。24 位有符号样本正上限为 8388607，后两次正峰值接近该上限；仅凭极值不能认定削顶，也不能排除启动瞬态或数据格式问题。当前 PASS 只检查采集完成和数据存在变化，不证明音质、噪声或幅度准确性；后续结合条件确认与录音试听继续验收。本次仅整理用户日志，未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
