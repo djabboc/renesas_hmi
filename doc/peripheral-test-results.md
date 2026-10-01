@@ -287,6 +287,31 @@ TEST IDLE
 
 日志确认界面初始化、选色、两次清屏和 60 秒后退出正常；本段只出现 id=0，双指体验及无误连线的验收依据为用户明确反馈，不将其表述为串口直接证明。WAIT 符合交互例程的结果语义，人工验收结论单独记录。本次仅归档用户日志，未打开 COM8。
 
+## 用户逐项验收：LVGL 显示（2026-10-01）
+
+当前固件为 `5193620`。用户执行 `hmi_test lcd-lvgl` 后确认“正常”，对应五色色块及文字正确、进度条持续往返、运行计数递增且无明显花屏。本项人工验收通过。
+
+```text
+msh >hmi_test lcd-lvgl
+TEST BEGIN lcd-lvgl
+LVGL: ready 480x272 RGB565, draw buffer=19200 bytes
+LVGL: updates=50 flushes=165
+LVGL: updates=100 flushes=320
+LVGL: updates=150 flushes=475
+LVGL: updates=200 flushes=630
+LVGL: updates=250 flushes=785
+LVGL: updates=300 flushes=940
+LVGL: updates=350 flushes=1095
+LVGL: updates=400 flushes=1250
+LVGL: updates=450 flushes=1405
+LVGL: updates=500 flushes=1560
+LVGL: updates=550 flushes=1715
+TEST RESULT lcd-lvgl WAIT code=1 elapsed=60022 ms
+TEST IDLE
+```
+
+日志确认 RGB565 显示初始化、19200 字节绘图缓冲、更新与刷新计数持续增长，并在约 60 秒后正常退出。最后一条周期日志为 updates=550/flushes=1715，不将其当作退出时最终计数；flushes 是刷新回调次数，不等同于完整帧数或 FPS。WAIT 的人工观察要求已由用户确认补齐。本例不接入触摸，触摸控件由下一项 `lcd-touch-lvgl` 单独验收。本次助手未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
