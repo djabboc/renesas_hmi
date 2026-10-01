@@ -1044,6 +1044,22 @@ TEST IDLE
 
 本次只验证两组 MOSI/MISO 外接回环，不覆盖真实 SPI 从设备的协议响应、外部片选/时钟引脚连通性或最高速率。下一步断电拆除 Pmod 回环跳线，将 Arduino 扩展排母上丝印 P512（MOSI/D11）和 P511（MISO/D12）短接，执行 `hmi_test pmod-arduino`。此次仅更新文档，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：Arduino 扩展口 SPI 回环（2026-10-01）
+
+用户按 P512（MOSI/D11）与 P511（MISO/D12）直连的接线步骤，提供以下日志：
+
+```text
+msh >hmi_test pmod-arduino
+TEST BEGIN pmod-arduino
+msh >PMOD arduino MOSI/MISO loop 8x64 bytes MATCH
+TEST RESULT pmod-arduino PASS code=0 elapsed=16 ms
+TEST IDLE
+```
+
+结论：SCI4 的 Arduino 扩展口 SPI 回环验收通过，1 MHz 下八组 64 字节（共 512 字节）全部匹配，耗时 16 ms，正常退出。至此 Pmod SPI0、Pmod SPI1、Arduino SPI 三组 MOSI/MISO 回环均通过；不将回环通过等同于真实从设备协议、片选/时钟外部布线或最大速率已验证。
+
+下一项为 Pmod0 外部中断回环：断电拆除 P512/P511 跳线，使用已通过 pmod-spi0 的同一个插座，连接 GPIO0/P211（J1-4）与 IRQ/P708（J1-2）。按原理图的对应列，另一排正对 MOSI/J1-3 的孔为 IO0/J1-4；正对 CS/J1-1 的孔为 IRQ/J1-2。这两个孔相邻，并非把原 MOSI/MISO 两孔直接换排（那样会接到 IO0/IO1）。此测试 GPIO0 为输出，IRQ 为输入，在无其他外接模块时可使用直接跳线。上电执行 `hmi_test pmod-irq0`，预期 edges=16 expected=16 和 PASS。本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -1089,7 +1105,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未完成外接条件验证 | `can-bus`、`pmod-arduino/irq0/irq1` 待对端或接线。ADC low/high、GPIO loop、Pmod SPI0/SPI1 已在 2026-10-01 用户复测通过，见上方日志 |
+| 未完成外接条件验证 | `can-bus`、`pmod-irq0/irq1` 待对端或接线。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已在 2026-10-01 用户复测通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
