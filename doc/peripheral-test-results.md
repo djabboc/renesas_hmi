@@ -360,6 +360,28 @@ TEST RESULT audio-mic PASS code=0 elapsed=539 ms
 
 结合用户确认，后两次发声时峰峰值较安静时增大，第三次峰峰值最大，说明本轮观察到采样幅度随发声条件变化。24 位有符号样本正上限为 8388607，后两次正峰值接近该上限；仅凭极值不能认定削顶，也不能排除启动瞬态或数据格式问题。当前程序 PASS 只检查采集完成和数据存在变化，人工对照补充了基本声学响应证据，不证明音质、噪声、线性度或幅度准确性；后续通过录音试听继续验收。本次仅整理用户日志与补充确认，未打开 COM8。
 
+## 用户逐项验收：RTC 走时与闹钟（2026-10-01）
+
+当前固件为 `5193620`。用户提供两项完整日志：
+
+```text
+msh >hmi_test rtc-tick
+TEST BEGIN rtc-tick
+RTC source=32.768k crystal date=2026-10-01 12:00:03 alarm_count=0
+TEST RESULT rtc-tick PASS code=0 elapsed=5513 ms
+TEST IDLE
+
+msh >hmi_test rtc-alarm
+TEST BEGIN rtc-alarm
+RTC source=32.768k crystal date=2026-10-01 12:00:03 alarm_count=1
+TEST RESULT rtc-alarm PASS code=0 elapsed=5513 ms
+TEST IDLE
+```
+
+两项基础功能验收通过：RTC 从预设的 12:00:00 走到 12:00:03，走时例程没有闹钟事件，闹钟例程恰好一次，两项均正常退出。本轮不覆盖长期计时精度或断电保持。
+
+用户反馈“rtc-tick 超过 3 秒，等了 6 秒”。经源码核对，两个例程均先执行 `RTC_OSCILLATOR_SETTLE_MS=2200` 的固定晶振稳定等待，设置日期后再执行 `RTC_OBSERVATION_MS=3200` 的走时观察，另有驱动初始化及清理开销。总耗时 5513ms 符合当前实现，日期只前进约 3 秒也正确，不是 RTC 走慢。之前指导中的“约 3 秒”漏计初始化时间，已将使用手册修正为整条命令约 5.5～6 秒。本次仅更新说明和验收记录，未修改或烧录固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
