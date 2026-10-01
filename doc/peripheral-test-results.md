@@ -8,13 +8,12 @@
 
 | 尚未覆盖 | 已有证据与边界 |
 | --- | --- |
-| USB物理拔插 | 枚举、文本、特殊字节及后续128字节跨包回显已通过；软件关闭重启不等于实际拔插，后者仍待补测 |
 | 当前BLE例程连接/断开复验 | 旧ble.c有连接/服务枚举反馈，当前rw007-adv只确认可发现及地址一致，不能自动沿用为当前连接路径已复验 |
 | RTC长期精度 | 短时走时、闹钟已通过；现有例程会重设测试时间，不提供长期误差测量 |
 | JPEG到LCD联合显示 | JPEG像素检查及G2D内存绘图已通过；目前图形例程不输出到LCD，需补实现后才能验收此进一步阶段 |
 | 外接SWD排针 | 板载DAP-LINK烧录、串口、物理复位已通过；外接调试器路径未测 |
 
-音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
+USB收尾已由后续日志补齐：128字节跨包回显一致，运行中一次物理拔插后重新枚举并回显成功。音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
 
 ## 实体复位键：重新启动与状态清零验收通过（2026-10-01）
 
@@ -936,6 +935,40 @@ TEST IDLE
 [0002] [22:51:51.306] RX> 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F 40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F 50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F 60 61 62 63 64 65 66 67 68 69 6A 6B 6C 6D 6E 6F 70 71 72 73 74 75 76 77 78 79 7A 7B 7C 7D 7E 7F
 ```
 
+### USB 运行中物理拔插与回显恢复验收通过（2026-10-01）
+
+用户按指引保持ART-Link/COM8连接，只拔插系统USB线，并提供同一次 `usb-echo` 窗口内的两组收发记录。拔插前 `11 22 33 44`、插回后 `AA 55 00 FF` 均逐字节一致。板端 mounted_events=2，rx=8、tx_queued=8、tx_complete_events=2，30341 ms后正常返回WAIT与TEST IDLE；日志未出现重新启动横幅。
+
+结论：本次运行中的物理拔插、重新枚举与数据回显恢复通过，关闭USB物理拔插待办。结合此前128字节跨包验收，当前任务书USB基础收尾已完成。本次只覆盖一次拔插循环，不扩展为长时间压力或安卓OTG兼容性通过。本轮仅归档用户证据，未修改/烧录固件或打开COM8。
+
+主机原始记录：
+
+```text
+[23:03:00.205] TX> 11 22 33 44
+[23:03:00.212] RX> 11 22 33 44
+[23:03:12.413] TX> AA 55 00 FF
+[23:03:12.421] RX> AA 55 00 FF
+```
+
+板端原始记录（仅去除行内提示符）：
+
+```text
+msh >hmi_test usb-echo
+TEST BEGIN usb-echo
+USB system connector VBUS=1; debug USB/COM8 is separate
+USB start: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB start: SYSSTS0=0001 INTSTS0=00C0 INTENB0=FD00 USBADDR=0000 NVIC=1
+USB start: irq=2 reset=0 setup=0 desc_device=0 desc_config=0
+USB waiting up to 15 seconds for host enumeration
+USB enumeration: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB enumeration: SYSSTS0=0001 INTSTS0=00B1 INTENB0=DD00 USBADDR=0002 NVIC=1
+USB enumeration: irq=48 reset=2 setup=13 desc_device=3 desc_config=4
+USB CDC configured, echo window 30s. Use the NEW COM port.
+USB mounted_events=2 rx=8 tx_queued=8 tx_complete_events=2
+TEST RESULT usb-echo WAIT code=1 elapsed=30341 ms
+TEST IDLE
+```
+
 ## 用户逐项验收：RW007 模块信息（2026-10-01）
 
 用户在当前固件上执行独立例程 `rw007-info`，提供如下日志：
@@ -1458,7 +1491,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | 人工可发现性与地址核对通过 | `rw007-adv`：手机发现 RW007-ED30；用户复核地址为 FC:58:4A:A6:ED:30，与模块日志一致，关闭此前第二字节差异 |
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
 | 已复测通过 | `sd-info/read/file`、空闲拔插恢复均已通过，专用文件8192字节重挂载读回MATCH；不代表写入中拔卡安全 |
-| 跨包回显已通过，物理拔插待测 | Windows枚举、文本、特殊字节及128字节00～7F回显一致；本次累计rx/tx=2304，主机提供一组128字节比对记录 |
+| USB收尾验收通过 | Windows枚举、文本、特殊字节、128字节跨包以及运行中物理拔插后回显恢复均有证据；拔插窗口mounted_events=2，rx/tx=8 |
 | 人工验收通过 | `pmod-i2c`：基础图案与优化后全部动画正常；方块29.2 fps、立方体30.0 fps、字幕15.0 fps，总耗时60577 ms，用户明确验收通过 |
 | 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
