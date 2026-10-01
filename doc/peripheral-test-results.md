@@ -8,12 +8,11 @@
 
 | 尚未覆盖 | 已有证据与边界 |
 | --- | --- |
-| 当前BLE例程连接/断开复验 | 旧ble.c有连接/服务枚举反馈，当前rw007-adv只确认可发现及地址一致，不能自动沿用为当前连接路径已复验 |
 | RTC长期精度 | 短时走时、闹钟已通过；现有例程会重设测试时间，不提供长期误差测量 |
 | JPEG到LCD联合显示 | JPEG像素检查及G2D内存绘图已通过；目前图形例程不输出到LCD，需补实现后才能验收此进一步阶段 |
 | 外接SWD排针 | 板载DAP-LINK烧录、串口、物理复位已通过；外接调试器路径未测 |
 
-USB收尾已由后续日志补齐：128字节跨包回显一致，运行中一次物理拔插后重新枚举并回显成功。音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
+USB收尾已由后续日志补齐：128字节跨包回显一致，运行中一次物理拔插后重新枚举并回显成功。当前BLE也已补齐：首轮连接并收到断开事件，第二轮重新运行后再次连接成功。音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
 
 ## 实体复位键：重新启动与状态清零验收通过（2026-10-01）
 
@@ -1144,6 +1143,50 @@ TEST IDLE
 地址差异已核实关闭（2026-10-01）：此前用户手工记录为 `FC:56:4A:A6:ED:30`，该历史反馈保留。用户按指引复核后明确回复 `FC:58:4A:A6:ED:30`，与 `rw007-info` 的 Wi-Fi MAC、`rw007-ble` 的 BLE public 地址一致，确认第二字节为 `58`。广播可发现性及手机地址一致性均已验收通过。本次只收到地址确认，没有新增板端日志；不扩展为连接、服务枚举或 GATT 收发验收。助手本轮只更新文档，未打开 COM8、修改代码或烧录。
 
 启动时一次全 0 SPI 头异常仍保留，后续命令成功不代表底层零错误。下一项可先做 A0/P000 的 ADC 采样，再用已知 GND/3.3 V 输入进行端点验证。本次仅归档用户日志并更新状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
+### 当前 BLE 例程连接、断开后重跑再连接通过（2026-10-01）
+
+用户按连接复验指引提供两轮 `hmi_test rw007-adv` 日志。第一轮出现 `connection status=0`，随后在TEST RESULT之前出现 `disconnected`；等TEST IDLE后启动第二轮，再次出现 `connection status=0`。当前例程的连接、断开事件上报、重新运行后再次连接路径验收通过，关闭该收尾项。
+
+第一轮耗时17148 ms，第二轮17157 ms，均返回WAIT和TEST IDLE。第二轮没有在测试结束前记录断开事件，不记为第二次主动断开成功。这里只验证重启例程后的再次连接，未验证同一轮内断开后自动恢复广播/重连；日志未包含断开原因或手机界面，不单凭事件断定由哪端发起断开。0xA0/0xA8事件保留原样，不将其解释成通用BLE串口收发通过。
+
+两轮初始化均出现首个SPI头全FF，后续命令和连接事件恢复正常；保留既知现象，不记录为零通信异常。本次仅归档用户日志，不修改/烧录固件或打开COM8。
+
+原始输出（仅去除重复提示符与空行）：
+
+```text
+msh >hmi_test rw007-adv
+TEST BEGIN rw007-adv
+RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 FFFFFFFF FFFFFFFF flags=FF
+RW007: command=0 result=0 bytes=0
+BLE: init queued without ACK; following operation must confirm support
+RW007: command=25 result=0 bytes=0
+ADV: command accepted for 60 seconds; verify discovery on phone
+BLE: connection status=0
+BLE: event=0xA0 result=0 bytes=46
+BLE: event=0xA0 result=0 bytes=46
+BLE: event=0xA8 result=0 bytes=8
+BLE: event=0xA8 result=0 bytes=8
+BLE: disconnected
+TEST RESULT rw007-adv WAIT code=1 elapsed=17148 ms
+TEST IDLE
+
+msh >hmi_test rw007-adv
+TEST BEGIN rw007-adv
+RW007: RW007 SCI3 mode0 1MHz, IRQ13 ready
+RW007: bad SPI header phase1 FFFFFFFF FFFFFFFF flags=FF
+RW007: command=0 result=0 bytes=0
+BLE: init queued without ACK; following operation must confirm support
+RW007: command=25 result=0 bytes=0
+ADV: command accepted for 60 seconds; verify discovery on phone
+BLE: connection status=0
+BLE: event=0xA0 result=0 bytes=46
+BLE: event=0xA0 result=0 bytes=46
+BLE: event=0xA8 result=0 bytes=8
+TEST RESULT rw007-adv WAIT code=1 elapsed=17157 ms
+TEST IDLE
+```
 
 ## 用户逐项验收：ADC A0 基础采样（2026-10-01）
 
