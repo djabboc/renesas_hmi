@@ -144,6 +144,8 @@ python scripts/test_peripherals.py --command "hmi_test usb-echo" --usb-port COM1
 
 工具发送全部 0～255 字节及跨包数据，包含 NUL、FF 和 CR/LF，并逐字节比较回显。`--port COM8` 是控制口，`--usb-port` 必须是系统 USB 新端口。重复拔插后重新执行。测试结束设备断开 CDC 并关闭 USBFS。
 
+2026-10-01 用户已完成128字节00～7F跨包回显对照，TX/RX一致，板端累计rx=2304、tx_queued=2304，正常退出。主机只贴出一组128字节记录，物理拔插仍待补测。
+
 枚举失败时保留完整 `USB start` / `USB enumeration` 日志：
 
 - `VBUS_pin` 是 P407 电平，`VBSTS` 是 USB 控制器检测值；两者均不能证明 D+/D− 通信正常。
