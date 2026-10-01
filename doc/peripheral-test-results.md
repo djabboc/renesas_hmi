@@ -4,6 +4,39 @@
 
 ## SSD1306 外接 I²C 基础显示验收与动画优化（2026-10-01）
 
+### 动画优化版人工验收通过
+
+对应固件 `8b3fb6b`，用户明确反馈“完美验收通过，全部正常”。基础图案、移动方块、透视旋转立方体和广告字幕均通过视觉验收，关闭此前动画残影与新场景待复验项。证据为用户本次提供的串口日志及视觉结论；本轮仅整理文档，未打开 COM8、未修改或重新烧录固件。
+
+| 场景 | 帧数 | 实测帧率 | 平均数据字节/帧 | 平均传输耗时 |
+| --- | ---: | ---: | ---: | ---: |
+| 移动方块 | 117 | 29.2 fps | 28 | 7 ms |
+| 透视立方体 | 481 | 30.0 fps | 111 | 24 ms |
+| 循环广告字幕 | 542 | 15.0 fps | 376 | 64 ms |
+
+滚动字幕的传输量较大，平均传输 64 ms，实际帧率为 15.0 fps，未达到约 30 fps 的目标；用户已确认该效果正常，按实测值记录验收，不将目标帧率当作结果。总计 1142 帧（含两帧静态图案），数据 263129 字节，总耗时 60577 ms，返回 WAIT 后正常到达 TEST IDLE。WAIT 是此例程预设的人工观察结果码，结合用户视觉确认后记录为验收通过。
+
+原始日志如下，仅移除行内 `msh >` 提示符。三条统计行末尾在用户回传内容中被截断，所有 `tx_ms_max` 数值均未知，不补写或推测；平均耗时字段完整可读。
+
+```text
+msh >hmi_test pmod-i2c
+TEST BEGIN pmod-i2c
+OLED ACK addr=0x3C; using SSD1306 128x64 profile
+OLED border: all four edges should be visible (2 seconds)
+OLED checkerboard: 8x8 squares across whole screen (2 seconds)
+OLED scene=block duration=4000 ms target_period=33 ms
+OLED scene=block frames=117 fps=29.2 data_bytes/frame=28 tx_ms_avg=7 tx_m
+OLED scene=cube duration=16000 ms target_period=33 ms
+OLED scene=cube frames=481 fps=30.0 data_bytes/frame=111 tx_ms_avg=24 tx_
+OLED scene=marquee duration=36000 ms target_period=33 ms
+OLED scene=marquee frames=542 fps=15.0 data_bytes/frame=376 tx_ms_avg=64
+OLED frames=1142 data_bytes=263129; visual confirmation required
+TEST RESULT pmod-i2c WAIT code=1 elapsed=60577 ms
+TEST IDLE
+```
+
+以下为优化前反馈及开发过程记录，待复验描述仅代表当时状态，以本节最终验收结论为准。
+
 用户反馈：固件 `e3b2152` 的显示“全部正常”，但移动动画刷新较慢，肉眼有明显残影；本次没有补充串口日志。记录为基础图案功能通过、动画流畅度需要改进，不将残影归因于已测量的面板响应时间。
 
 本轮优化只修改 `test-pmod-i2c.c`：
@@ -1293,7 +1326,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
-| 基础显示通过，动画待复验 | `pmod-i2c`：用户确认 SSD1306 基本显示正常，反馈残影；变化区域刷新、立方体/循环字幕优化待复验 |
+| 人工验收通过 | `pmod-i2c`：基础图案与优化后全部动画正常；方块29.2 fps、立方体30.0 fps、字幕15.0 fps，总耗时60577 ms，用户明确验收通过 |
 | 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
