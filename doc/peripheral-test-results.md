@@ -2,6 +2,20 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 验收范围核对（2026-10-01）
+
+用户询问除音频/CAN两项物料TODO以外是否还有验证缺口。本次按用户逐项日志与原任务书核对，结论是仍有收尾/进一步覆盖项，不能宣称全任务书全部阶段已经验收：
+
+| 尚未覆盖 | 已有证据与边界 |
+| --- | --- |
+| USB物理拔插、跨包长数据回显 | 枚举、13字节文本、5组8字节二进制已通过；软件关闭重启不等于实际拔插，尚无大于64字节的用户回显比对 |
+| 当前BLE例程连接/断开复验 | 旧ble.c有连接/服务枚举反馈，当前rw007-adv只确认可发现及地址一致，不能自动沿用为当前连接路径已复验 |
+| RTC长期精度 | 短时走时、闹钟已通过；现有例程会重设测试时间，不提供长期误差测量 |
+| JPEG到LCD联合显示 | JPEG像素检查及G2D内存绘图已通过；目前图形例程不输出到LCD，需补实现后才能验收此进一步阶段 |
+| 外接SWD排针 | 板载DAP-LINK烧录、串口、物理复位已通过；外接调试器路径未测 |
+
+音频提示音/回放和CAN外部收发仍等待既定物料。明确执行条件和验收边界已整理到 `TODO.md`。下文历史待验收描述保留其当时语境，以最新逐项结论和本节核对为准。本次仅审阅、更新文档，未打开串口、执行板测或修改固件。
+
 ## 实体复位键：重新启动与状态清零验收通过（2026-10-01）
 
 用户按复位测试指引提供日志：复位前 `hmi_test status` 显示 ready=1、busy=0，已有 gpio-inputs 5次、gpio-led 4次、pmod-i2c 1次运行记录；随后重新出现 RT-Thread 5.0.1 启动横幅、Hello RT-Thread 和 i2c1 注册信息，说明系统已重新启动并执行总线初始化。
@@ -1384,7 +1398,7 @@ TEST IDLE
 | 网口 `eth-mac` / `eth-phyloop` | PASS，各核对 12/12 帧，覆盖 60、512、1514 字节 |
 | 网口 `eth-link` / `eth-lwip` | PASS；DHCP、DNS、TCP、HTTP 200 和正文 MATCH；lwIP → MAC → lwIP 连续切换通过 |
 | `can-loop` | PASS，500 kbit/s 内部收发校验 |
-| `audio-mic` | PASS，8192 帧 DMA 完成、左声道数据有变化；实际声学响应仍待说话/静音对照 |
+| `audio-mic` | PASS，8192帧DMA完成；后续用户已确认第一次安静、第二/三次发声且第三次最大，基本声学响应通过，未验证音质 |
 | `rtc-tick` / `rtc-alarm` | PASS，日期/秒计数与单次闹钟事件符合预期 |
 | `touch-info` | PASS，GT911、480×272 |
 | `graphics-g2d` / `graphics-jpeg` | PASS，像素、尺寸及完成事件校验 |
@@ -1401,18 +1415,18 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 - idle 栈峰值为 15%；本轮基础/扩展批次观测到堆峰值 92880 字节。不存在常驻 `ptest` 工作线程。
 - 生命周期记录：`logs/mvp-lifecycle.log`；最终交付固件再次复跑同样 9 次 GUI 启停，三轮堆仍为 171584 字节，见 `logs/mvp-lifecycle-delivery.log`。基础记录：`logs/mvp-hardware-baseline-03.log`；扩展记录：`logs/mvp-hardware-extended.log`。失败修正前日志仅用于定位，不计入通过证据。
 
-## 待用户提供实物条件后验收
+## 当前验收状态汇总（已合并后续用户反馈）
 
 | 状态 | 项目与原因 |
 | --- | --- |
 | GPIO 输入与 LED 已验收 | `gpio-inputs` 五次采样与逐键操作一致；`gpio-keys` 短按/长按记录见上文；用户已确认 `gpio-led` 三颗 LED 依次闪烁，视觉验收通过 |
 | WAIT | `audio-tone`、`audio-replay`：播放采样数达到预期，声音内容/音质需试听 |
-| WAIT | `lcd-colors`、`lcd-backlight`、三个界面例程：程序和生命周期已检查，图像/触摸手感需目视操作 |
-| WAIT | `touch-points`、`touch-irq`：窗口内无人触摸，坐标和实际中断边沿需触摸复测 |
+| 人工验收通过 | `lcd-colors`、`lcd-backlight`、画板与两个LVGL界面均有后续用户正常反馈，见各节日志 |
+| 已复测通过 | `touch-points` 有1～5指及全部抬起记录；`touch-irq` 修复后计数78、PASS；结合画板/LVGL人工验收 |
 | 人工可发现性与地址核对通过 | `rw007-adv`：手机发现 RW007-ED30；用户复核地址为 FC:58:4A:A6:ED:30，与模块日志一致，关闭此前第二字节差异 |
 | WAIT | `adc-sample`：只报告悬空读数，不能证明精度 |
-| SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
-| SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
+| 已复测通过 | `sd-info/read/file`、空闲拔插恢复均已通过，专用文件8192字节重挂载读回MATCH；不代表写入中拔卡安全 |
+| 基础验收通过，补测见TODO | Windows枚举、文本与特殊字节ECHO均通过；运行中物理拔插和跨包长数据尚无验收证据 |
 | 人工验收通过 | `pmod-i2c`：基础图案与优化后全部动画正常；方块29.2 fps、立方体30.0 fps、字幕15.0 fps，总耗时60577 ms，用户明确验收通过 |
 | 外接回环验收状态 | `can-bus` 仍待对端；旧 `pmod-irq0/irq1` 历史验收通过，现已替换为 `gpio-irq-rising/both`，新 IRQ12 接线亦已通过，分别 8/16 次中断、213/212 ms。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
