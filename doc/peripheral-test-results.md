@@ -45,7 +45,33 @@ TEST RESULT gpio-keys PASS code=0 elapsed=15017 ms
 TEST IDLE
 ```
 
-日志中 KEY 2 有四次完整短按，不能仅凭重复次数判断为抖动，也不能在未核对实际操作前宣称消抖通过。后续补测：确认 LED 依次变化；重新运行 `hmi_test gpio-keys`，三键各短按一次，再将其中一键按住约 2 秒并松开，确认该次输出 `UP LONG`。
+首轮日志中 KEY 2 有四次完整短按，不能仅凭重复次数判断为抖动，也不能在未核对实际操作前宣称消抖通过。LED 目视结果和首轮操作次数仍待用户确认。
+
+### 按键长按补测
+
+用户随后提供以下日志，三个键均识别到完整长按，KEY 0 另有一次完整短按：
+
+```text
+msh >hmi_test gpio-keys
+TEST BEGIN gpio-keys
+KEY levels P005=1 P006=1 P007=1 (pressed=0)
+KEY 2 DOWN
+KEY 2 UP LONG
+KEY 1 DOWN
+KEY 1 UP LONG
+KEY 0 DOWN
+KEY 0 UP LONG
+KEY 0 DOWN
+KEY 0 UP SHORT
+KEY 0 DOWN
+KEY 0 press=3 release=2
+KEY 1 press=1 release=1
+KEY 2 press=1 release=1
+TEST RESULT gpio-keys PASS code=0 elapsed=15019 ms
+TEST IDLE
+```
+
+结论：结合首轮日志，三键短按、长按及按下/抬起识别均已有证据。本轮 KEY 0 最后一次 DOWN 在测试窗口结束前没有对应 UP，记录为未完成的一次操作，不据此判断硬件故障。源码固定采样 15 秒；PASS 只要求每个键至少检测到一次按下和一次释放，不要求最终累计次数相等，也不会等待最后一个键松开。是否在窗口结束后才松手尚未经用户确认。本次只更新验收文档，不修改固件。
 
 ## 构建与结构检查
 
