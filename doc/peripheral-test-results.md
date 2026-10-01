@@ -12,7 +12,7 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 | 任务 | 本轮实际结果 | 尚需最终复测 |
 | --- | --- | --- |
-| P01 网口 | 自测回环通过；2026-10-01 用户提供日志确认 phy/mac/phyloop/link/lwip 五阶段全部 PASS。MAC/PHY 回环各 12/12 帧，链路 100Mbps 全双工，DHCP/DNS/TCP/HTTP 内容校验通过；后续 link/lwip 无链路时均在 6156 ms 返回 SKIP。 | 重新插入后 link/lwip 恢复仍待验证；未做长期稳定性/吞吐量测试。 |
+| P01 网口 | 2026-10-01 功能验收完成：phy/mac/phyloop/link/lwip 五阶段 PASS，MAC/PHY 回环各 12/12 帧；无链路时有限等待返回 SKIP；插回后 link/lwip 恢复 PASS，100Mbps 全双工及真实互联网访问正常。 | 本轮规定的功能与拔插恢复项目已通过；未做长期稳定性/吞吐量测试。 |
 | P02 TF | SDHI 打开及卡检测可执行，`card_inserted=0`；`read/file` SKIP。 | 插 FAT16/32 卡后依次 info/read/file，确认新建文件 8192 字节读回一致。 |
 | P03 CAN | 内部回环 8 组载荷通过，最终 TX=1/RX=1/errors=0。 | CAN 收发器到外部节点尚未验证；500 kbit/s 对端回复 0x322。 |
 | P04 麦克风 | SSI/DTC 接收 8192 个双声道帧完成，左声道数据有变化，PASS；约 16026 Hz。 | 说话/静音对比、增益与音质。DMA 完成不能代替音质验收。 |
@@ -44,7 +44,9 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 后续用户日志：`hmi_test eth link` 和 `hmi_test eth lwip` 均输出 `ETH no physical link`，在 6156 ms 后返回 `SKIP code=2` 和 `TEST IDLE`。无链路时有限等待并正常退出的行为符合预期；日志本身不能确认第二次命令前是否已插回网线。
 
-结论：网口从底层回环到真实互联网访问的功能复测通过，无链路退出行为已验证。插回后的恢复仍待验证，不标为通过。插回网线后依次重跑 `link` 和 `lwip`，应恢复 PASS；若已接线仍无链路，先检查两端插接、路由器 LAN 端口和线缆。
+恢复阶段用户日志：`hmi_test eth link` 在 1667 ms 后 PASS，链路 UP，speed/duplex enum=4（100Mbps 全双工），ECMR=00000066。随后 `hmi_test eth lwip` 在 3279 ms 后 PASS，重新取得 IP `192.168.0.102`，网关/DNS `192.168.0.1`，域名解析为 `23.205.151.12`；TCP 连接成功，HTTP status=200、received=187、expected_body=MATCH，tx=12、rx=8、drops=0，输出 `INTERNET PASS result=0`。两条命令均返回 `TEST IDLE`。
+
+结论：P01 本轮功能验收完成，覆盖 PHY 识别、MAC/PHY 回环、物理链路、DHCP/DNS/TCP/HTTP、无链路超时退出以及插回后重新执行命令恢复联网。该例程每次重新建立连接，本轮没有验证后台自动重连、长期稳定性或吞吐量。
 
 ## 已定位并修复的问题
 
