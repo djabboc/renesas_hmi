@@ -1,96 +1,164 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/**
+ * @file test-gpio.c
+ * @brief 板载 LED、用户按键与 Arduino GPIO 跳线测试。
+ *
+ * 每项结束恢复引脚配置；LED 视觉与长按效果仍需人工验收。
+ */
 #include "peripheral-test.h"
-#include "r_adc.h"
-static const bsp_io_port_pin_t leds[] = {BSP_IO_PORT_02_PIN_09,BSP_IO_PORT_02_PIN_10,BSP_IO_PORT_02_PIN_04};
-static const bsp_io_port_pin_t keys[] = {BSP_IO_PORT_00_PIN_05,BSP_IO_PORT_00_PIN_06,BSP_IO_PORT_00_PIN_07};
-int test_gpio(const char *stage)
+
+#define KEY_COUNT 3u
+#define KEY_SCAN_INTERVAL_MS 5u
+#define KEY_DEBOUNCE_SAMPLES 4u
+#define KEY_LONG_PRESS_MS 800u
+#define KEY_WINDOW_MS 15000u
+
+static const bsp_io_port_pin_t led_pins[] = {
+    BSP_IO_PORT_02_PIN_09, BSP_IO_PORT_02_PIN_10, BSP_IO_PORT_02_PIN_04};
+static const bsp_io_port_pin_t key_pins[] = {
+    BSP_IO_PORT_00_PIN_05, BSP_IO_PORT_00_PIN_06, BSP_IO_PORT_00_PIN_07};
+
+/* 两个红灯低有效、D13 蓝灯高有效；结束恢复生成的引脚配置。 */
+static int exercise_leds(void)
 {
-    unsigned i;
-    if (!strcmp(stage,"led")) {
-        for (i=0;i<3;++i) {
-            rt_kprintf("LED %u pin=P%u%02u active=%u\n",i,leds[i]>>8,leds[i]&255,i==2?1:0);
-            rt_pin_mode(leds[i],PIN_MODE_OUTPUT);
-            for (unsigned n=0;n<4 && !test_cancelled();++n) {
-                rt_pin_write(leds[i],n&1); rt_thread_mdelay(180);
-            }
-            rt_pin_write(leds[i],i==2?0:1); test_restore_pin(leds[i]);
+    unsigned pin_index;
+
+    for (pin_index = 0; pin_index < TEST_ARRAY_SIZE(led_pins); ++pin_index)
+    {
+        rt_kprintf("LED %u pin=P%u%02u active=%u\n",
+                   pin_index,
+                   led_pins[pin_index] >> 8,
+                   led_pins[pin_index] & 255,
+                   pin_index == 2 ? 1 : 0);
+        rt_pin_mode(led_pins[pin_index], PIN_MODE_OUTPUT);
+        for (unsigned toggle_index = 0; toggle_index < 4 && !test_cancelled(); ++toggle_index)
+        {
+            rt_pin_write(led_pins[pin_index], toggle_index & 1);
+            rt_thread_mdelay(180);
         }
-        rt_kprintf("LED output sequence finished; visual confirmation required\n");
+        rt_pin_write(led_pins[pin_index], pin_index == 2 ? 0 : 1);
+        test_restore_pin(led_pins[pin_index]);
+    }
+    rt_kprintf("LED output sequence finished; visual confirmation required\n");
+    return TEST_WAIT;
+}
+
+/* 5ms 采样、连续四次同电平才确认边沿；800ms 区分长按和短按。 */
+static int observe_keys(const char *stage)
+{
+    unsigned pin_index;
+
+    unsigned press_count[KEY_COUNT] = {0};
+    unsigned release_count[KEY_COUNT] = {0};
+    int stable_level[KEY_COUNT];
+    int candidate_level[KEY_COUNT];
+    unsigned stable_samples[KEY_COUNT] = {0};
+    rt_tick_t pressed_at[KEY_COUNT] = {0};
+    for (pin_index = 0; pin_index < KEY_COUNT; ++pin_index)
+    {
+        rt_pin_mode(key_pins[pin_index], PIN_MODE_INPUT_PULLUP);
+        stable_level[pin_index] = rt_pin_read(key_pins[pin_index]);
+        candidate_level[pin_index] = stable_level[pin_index];
+    }
+    rt_kprintf("KEY levels P005=%d P006=%d P007=%d (pressed=0)\n",
+               stable_level[0],
+               stable_level[1],
+               stable_level[2]);
+    if (strcmp(stage, "inputs") == 0)
+    {
+        for (pin_index = 0; pin_index < KEY_COUNT; ++pin_index)
+        {
+            test_restore_pin(key_pins[pin_index]);
+        }
         return TEST_WAIT;
     }
-    if (!strcmp(stage,"inputs") || !strcmp(stage,"keys")) {
-        unsigned pressed[3]={0},released[3]={0};
-        int stable[3],candidate[3]; unsigned consecutive[3]={0}; rt_tick_t down[3]={0};
-        for (i=0;i<3;++i) { rt_pin_mode(keys[i],PIN_MODE_INPUT_PULLUP); stable[i]=candidate[i]=rt_pin_read(keys[i]); }
-        rt_kprintf("KEY levels P005=%d P006=%d P007=%d (pressed=0)\n",stable[0],stable[1],stable[2]);
-        if (!strcmp(stage,"inputs")) {
-            for(i=0;i<3;++i) test_restore_pin(keys[i]);
-            return TEST_WAIT;
-        }
-        rt_tick_t start=rt_tick_get();
-        while (!test_elapsed(start,15000) && !test_cancelled()) {
-            for (i=0;i<3;++i) {
-                int value=rt_pin_read(keys[i]);
-                if (value!=candidate[i]) { candidate[i]=value; consecutive[i]=0; }
-                if (++consecutive[i] > 4) consecutive[i]=4;
-                if (consecutive[i]==4 && stable[i]!=value) {
-                    stable[i]=value;
-                    if (!value) { ++pressed[i]; down[i]=rt_tick_get(); rt_kprintf("KEY %u DOWN\n",i); }
-                    else { ++released[i]; rt_kprintf("KEY %u UP %s\n",i,test_elapsed(down[i],800)?"LONG":"SHORT"); }
+    rt_tick_t start = rt_tick_get();
+    while (!test_elapsed(start, KEY_WINDOW_MS) && !test_cancelled())
+    {
+        for (pin_index = 0; pin_index < KEY_COUNT; ++pin_index)
+        {
+            int sampled_level = rt_pin_read(key_pins[pin_index]);
+            if (sampled_level != candidate_level[pin_index])
+            {
+                candidate_level[pin_index] = sampled_level;
+                stable_samples[pin_index] = 0;
+            }
+            if (++stable_samples[pin_index] > KEY_DEBOUNCE_SAMPLES)
+            {
+                stable_samples[pin_index] = KEY_DEBOUNCE_SAMPLES;
+            }
+            if (stable_samples[pin_index] == KEY_DEBOUNCE_SAMPLES &&
+                stable_level[pin_index] != sampled_level)
+            {
+                stable_level[pin_index] = sampled_level;
+                if (!sampled_level)
+                {
+                    ++press_count[pin_index];
+                    pressed_at[pin_index] = rt_tick_get();
+                    rt_kprintf("KEY %u DOWN\n", pin_index);
+                }
+                else
+                {
+                    ++release_count[pin_index];
+                    rt_kprintf("KEY %u UP %s\n",
+                               pin_index,
+                               test_elapsed(pressed_at[pin_index], KEY_LONG_PRESS_MS) ? "LONG"
+                                                                                      : "SHORT");
                 }
             }
-            rt_thread_mdelay(5);
         }
-        for(i=0;i<3;++i) {
-            rt_kprintf("KEY %u press=%u release=%u\n",i,pressed[i],released[i]);
-            test_restore_pin(keys[i]);
-        }
-        return pressed[0]&&pressed[1]&&pressed[2]&&released[0]&&released[1]&&released[2]?0:TEST_WAIT;
+        rt_thread_mdelay(KEY_SCAN_INTERVAL_MS);
     }
-    if (!strcmp(stage,"loop")) {
-        /* Arduino D2=P008 -> D9=P009, through 1k resistor. */
-        int result=0;
-        rt_pin_mode(BSP_IO_PORT_00_PIN_09,PIN_MODE_INPUT_PULLUP);
-        rt_pin_mode(BSP_IO_PORT_00_PIN_08,PIN_MODE_OUTPUT);
-        for(i=0;i<16;++i) {
-            rt_pin_write(BSP_IO_PORT_00_PIN_08,i&1);rt_thread_mdelay(2);
-            if (rt_pin_read(BSP_IO_PORT_00_PIN_09)!=(int)(i&1)) result=-RT_ERROR;
+    for (pin_index = 0; pin_index < KEY_COUNT; ++pin_index)
+    {
+        rt_kprintf("KEY %u press=%u release=%u\n",
+                   pin_index,
+                   press_count[pin_index],
+                   release_count[pin_index]);
+        test_restore_pin(key_pins[pin_index]);
+    }
+    return press_count[0] && press_count[1] && press_count[2] && release_count[0] &&
+                   release_count[1] && release_count[2]
+               ? 0
+               : TEST_WAIT;
+}
+
+/* Arduino D2 -> D9，建议串联 1kΩ；所有电平均需在输入端读回一致。 */
+static int verify_gpio_loopback(void)
+{
+    unsigned pin_index;
+
+    /* Arduino D2=P008 输出，D9=P009 输入，建议串联 1kΩ。 */
+    int result = 0;
+    rt_pin_mode(BSP_IO_PORT_00_PIN_09, PIN_MODE_INPUT_PULLUP);
+    rt_pin_mode(BSP_IO_PORT_00_PIN_08, PIN_MODE_OUTPUT);
+    for (pin_index = 0; pin_index < 16; ++pin_index)
+    {
+        rt_pin_write(BSP_IO_PORT_00_PIN_08, pin_index & 1);
+        rt_thread_mdelay(2);
+        if (rt_pin_read(BSP_IO_PORT_00_PIN_09) != (int)(pin_index & 1))
+        {
+            result = -RT_ERROR;
         }
-        test_restore_pin(BSP_IO_PORT_00_PIN_08);test_restore_pin(BSP_IO_PORT_00_PIN_09);
-        return result;
+    }
+    test_restore_pin(BSP_IO_PORT_00_PIN_08);
+    test_restore_pin(BSP_IO_PORT_00_PIN_09);
+    return result;
+}
+
+int test_gpio(const char *stage)
+{
+    if (strcmp(stage, "led") == 0)
+    {
+        return exercise_leds();
+    }
+    if (strcmp(stage, "inputs") == 0 || strcmp(stage, "keys") == 0)
+    {
+        return observe_keys(stage);
+    }
+    if (strcmp(stage, "loop") == 0)
+    {
+        return verify_gpio_loopback();
     }
     return -RT_EINVAL;
-}
-int test_adc(const char *stage)
-{
-    adc_instance_ctrl_t ctrl={0};
-    adc_extended_cfg_t ext={.window_a_irq=FSP_INVALID_VECTOR,.window_b_irq=FSP_INVALID_VECTOR};
-    adc_cfg_t cfg={.unit=0,.mode=ADC_MODE_SINGLE_SCAN,.resolution=ADC_RESOLUTION_12_BIT,
-        .alignment=ADC_ALIGNMENT_RIGHT,.trigger=ADC_TRIGGER_SOFTWARE,.scan_end_irq=FSP_INVALID_VECTOR,
-        .scan_end_b_irq=FSP_INVALID_VECTOR,.p_extend=&ext};
-    adc_channel_cfg_t channels={.scan_mask=1};
-    uint16_t value,min=4095,max=0; unsigned sum=0;
-    int result=-RT_ERROR;
-    if(strcmp(stage,"sample") && strcmp(stage,"low") && strcmp(stage,"high")) return -RT_EINVAL;
-    if(R_IOPORT_PinCfg(&g_ioport_ctrl,BSP_IO_PORT_00_PIN_00,IOPORT_CFG_ANALOG_ENABLE)) return -RT_ERROR;
-    if(R_ADC_Open(&ctrl,&cfg)) goto restore;
-    if(R_ADC_ScanCfg(&ctrl,&channels)) goto done;
-    for(unsigned n=0;n<32;++n) {
-        adc_status_t status;
-        if(R_ADC_ScanStart(&ctrl)) goto done;
-        rt_tick_t start=rt_tick_get();
-        do { if(R_ADC_StatusGet(&ctrl,&status)) goto done; if(!status.state) break;rt_thread_mdelay(1); }
-        while(!test_elapsed(start,100) && !test_cancelled());
-        if(status.state || R_ADC_Read(&ctrl,ADC_CHANNEL_0,&value)) goto done;
-        if(value<min) min=value;
-        if(value>max) max=value;
-        sum+=value;
-    }
-    rt_kprintf("ADC A0/P000 n=32 min=%u max=%u avg=%u approx_mV=%u (Vref assumed 3300mV)\n",min,max,sum/32,(sum/32)*3300/4095);
-    result=!strcmp(stage,"low")?(max<100?0:-RT_ERROR):!strcmp(stage,"high")?(min>3995?0:-RT_ERROR):TEST_WAIT;
-done:
-    R_ADC_Close(&ctrl);
-restore:
-    test_restore_pin(BSP_IO_PORT_00_PIN_00);
-    return result;
 }

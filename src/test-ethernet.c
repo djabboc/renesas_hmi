@@ -1,135 +1,340 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/**
+ * @file test-ethernet.c
+ * @brief RTL8201F/RA6M3 网口：PHY 识别、两级回环和 lwIP 联网。
+ *
+ * 回环验证真实 DMA 帧内容；只有 link/lwip 阶段依赖外部网线。
+ * 描述符、帧缓冲与 FSP 配置必须在整个异步收发期间保持有效。
+ */
 #include "peripheral-test.h"
 #include "rw007-internet.h"
-/* FSP 3.5 exposes these helpers from r_ether_phy.c. Clause 22 registers. */
-extern uint32_t ether_phy_read(ether_phy_instance_ctrl_t *, uint32_t);
-extern void ether_phy_write(ether_phy_instance_ctrl_t *, uint32_t, uint32_t);
-static ether_cfg_t ecfg;
-static ether_phy_api_t phy_api;
-static ether_phy_instance_t phy;
-static uint8_t mac[6] = {0x02,0x48,0x4d,0x49,0x00,0x01};
-static ether_instance_descriptor_t rx_desc[4] BSP_ALIGN_VARIABLE(16);
-static ether_instance_descriptor_t tx_desc[2] BSP_ALIGN_VARIABLE(16);
-static uint8_t buffers[6][1536] BSP_ALIGN_VARIABLE(32);
-static uint8_t *buffer_ptrs[6];
-static uint8_t tx[1514] BSP_ALIGN_VARIABLE(4), rx[1536] BSP_ALIGN_VARIABLE(4);
-static volatile unsigned eth_irqs;
-static void eth_callback(ether_callback_args_t *a) { RT_UNUSED(a); ++eth_irqs; }
-/* FSP expects negotiated link. In a local loop only, explicitly supply the
- * forced 100/full MAC mode; success still requires actual DMA frame receipt. */
-static fsp_err_t forced_link(ether_phy_ctrl_t *c) { RT_UNUSED(c); return FSP_SUCCESS; }
-static fsp_err_t forced_ability(ether_phy_ctrl_t *c, uint32_t *speed, uint32_t *l, uint32_t *r)
-{ RT_UNUSED(c); *speed = ETHER_PHY_LINK_SPEED_100F; *l = *r = 0; return FSP_SUCCESS; }
-static int eth_open(int loop)
+
+/* FSP 3.5 在 r_ether_phy.c 导出这两个 Clause 22 MDIO 辅助函数。 */
+extern uint32_t ether_phy_read(ether_phy_instance_ctrl_t *control, uint32_t register_number);
+extern void
+ether_phy_write(ether_phy_instance_ctrl_t *control, uint32_t register_number, uint32_t value);
+
+#define PHY_REG_CONTROL 0u
+#define PHY_REG_STATUS 1u
+#define PHY_REG_ID_HIGH 2u
+#define PHY_REG_ID_LOW 3u
+#define PHY_CONTROL_LOOPBACK (1u << 14)
+#define PHY_CONTROL_SPEED_100M (1u << 13)
+#define PHY_CONTROL_AUTONEG (1u << 12)
+#define PHY_CONTROL_RESTART_AUTONEG (1u << 9)
+#define PHY_CONTROL_FULL_DUPLEX (1u << 8)
+#define ETH_RX_DESCRIPTOR_COUNT 4u
+#define ETH_TX_DESCRIPTOR_COUNT 2u
+#define ETH_BUFFER_COUNT (ETH_RX_DESCRIPTOR_COUNT + ETH_TX_DESCRIPTOR_COUNT)
+#define ETH_LOOP_FRAME_COUNT 12u
+#define ETH_FRAME_TIMEOUT_MS 500u
+#define ETH_LINK_TIMEOUT_MS 6000u
+#define ETH_TX_TIMEOUT_MS 100u
+#define ETH_RX_POLL_BUDGET 8u
+
+static ether_cfg_t ethernet_config;
+static ether_phy_api_t selected_phy_api;
+static ether_phy_instance_t selected_phy;
+static uint8_t mac_address[6] = {0x02, 0x48, 0x4d, 0x49, 0x00, 0x01};
+static ether_instance_descriptor_t rx_descriptors[ETH_RX_DESCRIPTOR_COUNT] BSP_ALIGN_VARIABLE(16);
+static ether_instance_descriptor_t tx_descriptors[ETH_TX_DESCRIPTOR_COUNT] BSP_ALIGN_VARIABLE(16);
+static uint8_t dma_buffers[ETH_BUFFER_COUNT][1536] BSP_ALIGN_VARIABLE(32);
+static uint8_t *dma_buffer_pointers[ETH_BUFFER_COUNT];
+static uint8_t transmit_frame[1514] BSP_ALIGN_VARIABLE(4);
+static uint8_t receive_frame[1536] BSP_ALIGN_VARIABLE(4);
+static volatile unsigned ethernet_irq_count;
+
+static void ethernet_callback(ether_callback_args_t *arguments)
 {
-    unsigned i;
-    fsp_err_t err;
-    const bsp_unique_id_t *uid=R_BSP_UniqueIdGet();
-    uint32_t hash=2166136261u;
-    for(i=0;i<sizeof(uid->unique_id_bytes);++i) hash=(hash^uid->unique_id_bytes[i])*16777619u;
-    for(i=0;i<4;++i) mac[i+2]=(uint8_t)(hash>>(i*8));
-    R_IOPORT_PinCfg(&g_ioport_ctrl, BSP_IO_PORT_04_PIN_00,
-                   IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW);
+    RT_UNUSED(arguments);
+    ++ethernet_irq_count;
+}
+
+/* 内部回环没有对端协商。仅在回环阶段向 FSP 提供固定链路状态，
+ * PASS 仍由后续实际接收长度/数据比对决定。
+ */
+static fsp_err_t loopback_link_status(ether_phy_ctrl_t *control)
+{
+    RT_UNUSED(control);
+    return FSP_SUCCESS;
+}
+
+static fsp_err_t loopback_link_ability(ether_phy_ctrl_t *control,
+                                       uint32_t *speed,
+                                       uint32_t *local_pause,
+                                       uint32_t *remote_pause)
+{
+    RT_UNUSED(control);
+    *speed = ETHER_PHY_LINK_SPEED_100F;
+    *local_pause = 0;
+    *remote_pause = 0;
+    return FSP_SUCCESS;
+}
+
+static void derive_mac_address(void)
+{
+    const bsp_unique_id_t *unique_id = R_BSP_UniqueIdGet();
+    uint32_t hash = 2166136261u;
+
+    /* FNV-1a 压缩芯片 ID；首字节 02 保持本地管理、单播属性。 */
+    for (unsigned index = 0; index < sizeof(unique_id->unique_id_bytes); ++index)
+    {
+        hash = (hash ^ unique_id->unique_id_bytes[index]) * 16777619u;
+    }
+    for (unsigned index = 0; index < 4; ++index)
+    {
+        mac_address[index + 2] = (uint8_t)(hash >> (index * 8));
+    }
+}
+
+static int ethernet_open(int use_loopback)
+{
+    fsp_err_t error;
+
+    derive_mac_address();
+    /* P400 是 PHY 低有效复位；释放后留出启动时间再访问 MDIO。 */
+    R_IOPORT_PinCfg(&g_ioport_ctrl,
+                    BSP_IO_PORT_04_PIN_00,
+                    IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW);
     rt_thread_mdelay(20);
     R_IOPORT_PinWrite(&g_ioport_ctrl, BSP_IO_PORT_04_PIN_00, BSP_IO_LEVEL_HIGH);
     rt_thread_mdelay(100);
-    phy_api = g_ether_phy_on_ether_phy;
-    if (loop) { phy_api.linkStatusGet = forced_link; phy_api.linkPartnerAbilityGet = forced_ability; }
-    phy = g_ether_phy0; phy.p_api = &phy_api;
-    ecfg = g_ether0_cfg;
-    ecfg.p_ether_phy_instance = &phy; ecfg.p_callback = eth_callback;
-    ecfg.p_mac_address = mac;
-    ecfg.p_rx_descriptors = rx_desc; ecfg.p_tx_descriptors = tx_desc;
-    ecfg.num_rx_descriptors = 4; ecfg.num_tx_descriptors = 2;
-    for (i = 0; i < 6; ++i) buffer_ptrs[i] = buffers[i];
-    ecfg.pp_ether_buffers = buffer_ptrs;
-    eth_irqs = 0;
-    err = R_ETHER_Open(&g_ether0_ctrl, &ecfg);
-    if (err) { rt_kprintf("ETH open=%d\n", err); return -RT_ERROR; }
-    rt_kprintf("ETH MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
-    return 0;
+
+    selected_phy_api = g_ether_phy_on_ether_phy;
+    if (use_loopback)
+    {
+        selected_phy_api.linkStatusGet = loopback_link_status;
+        selected_phy_api.linkPartnerAbilityGet = loopback_link_ability;
+    }
+    selected_phy = g_ether_phy0;
+    selected_phy.p_api = &selected_phy_api;
+    ethernet_config = g_ether0_cfg;
+    ethernet_config.p_ether_phy_instance = &selected_phy;
+    ethernet_config.p_callback = ethernet_callback;
+    ethernet_config.p_mac_address = mac_address;
+    ethernet_config.p_rx_descriptors = rx_descriptors;
+    ethernet_config.p_tx_descriptors = tx_descriptors;
+    ethernet_config.num_rx_descriptors = ETH_RX_DESCRIPTOR_COUNT;
+    ethernet_config.num_tx_descriptors = ETH_TX_DESCRIPTOR_COUNT;
+    for (unsigned index = 0; index < ETH_BUFFER_COUNT; ++index)
+    {
+        dma_buffer_pointers[index] = dma_buffers[index];
+    }
+    ethernet_config.pp_ether_buffers = dma_buffer_pointers;
+    ethernet_irq_count = 0;
+    error = R_ETHER_Open(&g_ether0_ctrl, &ethernet_config);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("ETH open=%d\n", error);
+        return -RT_ERROR;
+    }
+    rt_kprintf("ETH MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",
+               mac_address[0],
+               mac_address[1],
+               mac_address[2],
+               mac_address[3],
+               mac_address[4],
+               mac_address[5]);
+    return TEST_PASS;
 }
-static int eth_link(unsigned timeout)
+
+static int wait_for_ethernet_link(unsigned timeout_ms)
 {
     rt_tick_t start = rt_tick_get();
-    do {
+    do
+    {
         R_ETHER_LinkProcess(&g_ether0_ctrl);
-        if (g_ether0_ctrl.link_establish_status == ETHER_LINK_ESTABLISH_STATUS_UP) return 0;
+        if (g_ether0_ctrl.link_establish_status == ETHER_LINK_ESTABLISH_STATUS_UP)
+        {
+            return TEST_PASS;
+        }
         rt_thread_mdelay(20);
-    } while (!test_elapsed(start, timeout) && !test_cancelled());
+    } while (!test_elapsed(start, timeout_ms) && !test_cancelled());
     return -RT_ETIMEOUT;
 }
-static rt_err_t eth_exchange(const void *frame, rt_uint16_t length)
+
+/* raw lwIP 的收发适配器。length=0 时只轮询接收；限制每次收帧数量，
+ * 避免背景网络流量阻塞 lwIP 定时器和取消处理。
+ */
+static rt_err_t ethernet_exchange(const void *frame, rt_uint16_t length)
 {
-    uint32_t size;
     rt_tick_t start = rt_tick_get();
-    fsp_err_t err;
-    if (test_cancelled()) return -RT_EINTR;
-    R_ETHER_LinkProcess(&g_ether0_ctrl);
-    if (g_ether0_ctrl.link_establish_status != ETHER_LINK_ESTABLISH_STATUS_UP) return -RT_EIO;
-    if (length) {
-        do {
-            err = R_ETHER_Write(&g_ether0_ctrl, (void *)frame, length);
-            if (!err) break;
-            rt_thread_mdelay(1);
-        } while (!test_elapsed(start, 100) && !test_cancelled());
-        if (err) return -RT_EIO;
+    fsp_err_t error;
+
+    if (test_cancelled())
+    {
+        return -RT_EINTR;
     }
-    /* Bounded drain so traffic cannot starve timeouts or cancellation. */
-    for (unsigned n = 0; n < 8; ++n) {
-        size = sizeof(rx);
-        err = R_ETHER_Read(&g_ether0_ctrl, rx, &size);
-        if (err || !size) break;
-        rw007_net_input(rx, (rt_uint16_t)size);
+    R_ETHER_LinkProcess(&g_ether0_ctrl);
+    if (g_ether0_ctrl.link_establish_status != ETHER_LINK_ESTABLISH_STATUS_UP)
+    {
+        return -RT_EIO;
+    }
+    if (length != 0)
+    {
+        do
+        {
+            error = R_ETHER_Write(&g_ether0_ctrl, (void *)frame, length);
+            if (error == FSP_SUCCESS)
+            {
+                break;
+            }
+            rt_thread_mdelay(1);
+        } while (!test_elapsed(start, ETH_TX_TIMEOUT_MS) && !test_cancelled());
+        if (error != FSP_SUCCESS)
+        {
+            return -RT_EIO;
+        }
+    }
+    for (unsigned index = 0; index < ETH_RX_POLL_BUDGET; ++index)
+    {
+        uint32_t received_bytes = sizeof(receive_frame);
+        error = R_ETHER_Read(&g_ether0_ctrl, receive_frame, &received_bytes);
+        if (error != FSP_SUCCESS || received_bytes == 0)
+        {
+            break;
+        }
+        rw007_net_input(receive_frame, (rt_uint16_t)received_bytes);
     }
     return RT_EOK;
 }
+
+static int verify_phy_identity(void)
+{
+    uint32_t id_high = ether_phy_read(&g_ether_phy0_ctrl, PHY_REG_ID_HIGH);
+    uint32_t id_low = ether_phy_read(&g_ether_phy0_ctrl, PHY_REG_ID_LOW);
+
+    rt_kprintf("ETH PHY id=%04X:%04X BMCR=%04X BMSR=%04X\n",
+               id_high,
+               id_low,
+               ether_phy_read(&g_ether_phy0_ctrl, PHY_REG_CONTROL),
+               ether_phy_read(&g_ether_phy0_ctrl, PHY_REG_STATUS));
+    /* 全零/全 FF 通常表示 MDIO 未正常应答，不能作为有效身份。 */
+    if ((id_high == 0 && id_low == 0) || id_high == 0xffff || id_low == 0xffff)
+    {
+        return -RT_ERROR;
+    }
+    return TEST_PASS;
+}
+
+static int verify_loopback_frames(const char *stage)
+{
+    static const unsigned frame_lengths[] = {60, 512, 1514};
+    unsigned verified_frames;
+    uint32_t phy_control = PHY_CONTROL_SPEED_100M | PHY_CONTROL_FULL_DUPLEX;
+    int phy_loopback = strcmp(stage, "phyloop") == 0;
+
+    /* 关闭自动协商，固定 100M 全双工；PHY 回环还须设置 BMCR bit14。 */
+    if (phy_loopback)
+    {
+        phy_control |= PHY_CONTROL_LOOPBACK;
+    }
+    ether_phy_write(&g_ether_phy0_ctrl, PHY_REG_CONTROL, phy_control);
+    rt_thread_mdelay(50);
+    if (wait_for_ethernet_link(ETH_FRAME_TIMEOUT_MS) != TEST_PASS)
+    {
+        return -RT_ERROR;
+    }
+    if (!phy_loopback)
+    {
+        R_ETHERC0->ECMR_b.ILB = 1;
+    }
+
+    for (verified_frames = 0; verified_frames < ETH_LOOP_FRAME_COUNT && !test_cancelled();
+         ++verified_frames)
+    {
+        unsigned length = frame_lengths[verified_frames % TEST_ARRAY_SIZE(frame_lengths)];
+        uint32_t received_bytes;
+        rt_tick_t start;
+
+        /* 0x88B5 是本地实验 EtherType；变化载荷可检出旧帧或截断帧。 */
+        memcpy(transmit_frame, mac_address, 6);
+        memcpy(transmit_frame + 6, mac_address, 6);
+        transmit_frame[12] = 0x88;
+        transmit_frame[13] = 0xb5;
+        for (unsigned index = 14; index < length; ++index)
+        {
+            transmit_frame[index] = (uint8_t)(index ^ (verified_frames * 31));
+        }
+        if (R_ETHER_Write(&g_ether0_ctrl, transmit_frame, length) != FSP_SUCCESS)
+        {
+            return -RT_ERROR;
+        }
+        start = rt_tick_get();
+        do
+        {
+            received_bytes = sizeof(receive_frame);
+            if (R_ETHER_Read(&g_ether0_ctrl, receive_frame, &received_bytes) == FSP_SUCCESS &&
+                received_bytes != 0)
+            {
+                break;
+            }
+            received_bytes = 0;
+            rt_thread_mdelay(1);
+        } while (!test_elapsed(start, ETH_FRAME_TIMEOUT_MS) && !test_cancelled());
+        if (received_bytes != length || memcmp(transmit_frame, receive_frame, length) != 0)
+        {
+            rt_kprintf("ETH loop frame=%u expected=%u received=%u\n",
+                       verified_frames,
+                       length,
+                       received_bytes);
+            return -RT_ERROR;
+        }
+    }
+    rt_kprintf("ETH %s verified=%u/12 frames (60/512/1514 bytes) irq=%u\n",
+               stage,
+               verified_frames,
+               ethernet_irq_count);
+    return test_cancelled() ? -RT_EINTR : TEST_PASS;
+}
+
+static int verify_external_link(const char *stage)
+{
+    uint32_t speed = 0;
+    uint32_t local_pause = 0;
+    uint32_t remote_pause = 0;
+
+    if (wait_for_ethernet_link(ETH_LINK_TIMEOUT_MS) != TEST_PASS)
+    {
+        rt_kprintf("ETH no physical link; connect router LAN cable\n");
+        return TEST_SKIP;
+    }
+    R_ETHER_PHY_LinkPartnerAbilityGet(&g_ether_phy0_ctrl, &speed, &local_pause, &remote_pause);
+    rt_kprintf("ETH physical link UP speed/duplex enum=%u ECMR=%08X\n", speed, R_ETHERC0->ECMR);
+    if (strcmp(stage, "lwip") == 0)
+    {
+        return rw007_internet_test(mac_address, ethernet_exchange);
+    }
+    return TEST_PASS;
+}
+
 int test_eth(const char *stage)
 {
-    int loop = !strcmp(stage, "mac") || !strcmp(stage, "phyloop");
-    int result = -RT_ERROR;
-    uint32_t id1, id2, size, speed = 0, pause1 = 0, pause2 = 0;
-    unsigned i, n;
-    if (!loop && strcmp(stage,"phy") && strcmp(stage,"link") && strcmp(stage,"lwip")) return -RT_EINVAL;
-    if (eth_open(loop)) return -RT_ERROR;
-    id1 = ether_phy_read(&g_ether_phy0_ctrl, 2); id2 = ether_phy_read(&g_ether_phy0_ctrl, 3);
-    rt_kprintf("ETH PHY id=%04X:%04X BMCR=%04X BMSR=%04X\n", id1,id2,
-        ether_phy_read(&g_ether_phy0_ctrl,0), ether_phy_read(&g_ether_phy0_ctrl,1));
-    if ((id1 == 0 && id2 == 0) || id1 == 0xffff || id2 == 0xffff) goto done;
-    if (!strcmp(stage,"phy")) { result = 0; goto done; }
-    if (loop) {
-        /* BMCR: 100 Mbps, full duplex, autoneg off; bit14 enables PHY loop. */
-        ether_phy_write(&g_ether_phy0_ctrl, 0, !strcmp(stage,"phyloop") ? 0x6100 : 0x2100);
-        rt_thread_mdelay(50);
-        if (eth_link(500)) goto done;
-        if (!strcmp(stage,"mac")) R_ETHERC0->ECMR_b.ILB = 1;
-        for (n = 0; n < 12 && !test_cancelled(); ++n) {
-            unsigned length = n % 3 == 0 ? 60 : n % 3 == 1 ? 512 : 1514;
-            memcpy(tx, mac, 6); memcpy(tx + 6, mac, 6);
-            tx[12] = 0x88; tx[13] = 0xb5;
-            for (i = 14; i < length; ++i) tx[i] = (uint8_t)(i ^ (n * 31));
-            if (R_ETHER_Write(&g_ether0_ctrl, tx, length)) goto done;
-            rt_tick_t start = rt_tick_get();
-            do {
-                size = sizeof(rx);
-                if (R_ETHER_Read(&g_ether0_ctrl, rx, &size) == FSP_SUCCESS && size) break;
-                size = 0; rt_thread_mdelay(1);
-            } while (!test_elapsed(start, 500) && !test_cancelled());
-            if (size != length || memcmp(tx, rx, length)) {
-                rt_kprintf("ETH loop frame=%u expected=%u received=%u\n", n,length,size); goto done;
-            }
-        }
-        result = test_cancelled() ? -RT_EINTR : 0;
-        rt_kprintf("ETH %s verified=%u/12 frames (60/512/1514 bytes) irq=%u\n", stage,n,eth_irqs);
-    } else {
-        if (eth_link(6000)) { rt_kprintf("ETH no physical link; connect router LAN cable\n"); result = TEST_SKIP; goto done; }
-        R_ETHER_PHY_LinkPartnerAbilityGet(&g_ether_phy0_ctrl,&speed,&pause1,&pause2);
-        rt_kprintf("ETH physical link UP speed/duplex enum=%u ECMR=%08X\n", speed,R_ETHERC0->ECMR);
-        result = !strcmp(stage,"lwip") ? rw007_internet_test(mac, eth_exchange) : 0;
+    int use_loopback = strcmp(stage, "mac") == 0 || strcmp(stage, "phyloop") == 0;
+    int result;
+
+    if (!use_loopback && strcmp(stage, "phy") != 0 && strcmp(stage, "link") != 0 &&
+        strcmp(stage, "lwip") != 0)
+    {
+        return -RT_EINVAL;
     }
-done:
+    if (ethernet_open(use_loopback) != TEST_PASS)
+    {
+        return -RT_ERROR;
+    }
+    result = verify_phy_identity();
+    if (result == TEST_PASS && strcmp(stage, "phy") != 0)
+    {
+        result = use_loopback ? verify_loopback_frames(stage) : verify_external_link(stage);
+    }
+
+    /* 任一阶段退出均关闭 MAC；回环模式还需恢复 PHY 自动协商。 */
     R_ETHERC0->ECMR_b.ILB = 0;
-    if (loop) ether_phy_write(&g_ether_phy0_ctrl, 0, 0x1200);
+    if (use_loopback)
+    {
+        ether_phy_write(
+            &g_ether_phy0_ctrl, PHY_REG_CONTROL, PHY_CONTROL_AUTONEG | PHY_CONTROL_RESTART_AUTONEG);
+    }
     R_ETHER_Close(&g_ether0_ctrl);
     return result;
 }

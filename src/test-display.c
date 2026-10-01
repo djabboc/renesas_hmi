@@ -1,96 +1,151 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/**
+ * @file test-display.c
+ * @brief ST7282 RGB 屏五色及背光测试。
+ *
+ * 沿用已验收的 480x272 时序。P105 为屏幕/背光共用使能，
+ * P100 为背光 PWM。GLCDC 的停止请求须等待帧边界才能关闭。
+ */
 #include "peripheral-test.h"
-static volatile unsigned lcd_frames;
-static void display_event(display_callback_args_t *a) { RT_UNUSED(a); ++lcd_frames; }
+
+static volatile unsigned lcd_irq_count;
+
+static void display_event(display_callback_args_t *arguments)
+{
+    RT_UNUSED(arguments);
+    ++lcd_irq_count;
+}
+
+/* 必须在背光关闭后调用；Stop 和 Close 各自有 100ms 等待上限。 */
+static int close_display(void)
+{
+    rt_tick_t start = rt_tick_get();
+    fsp_err_t error;
+    do
+    {
+        error = R_GLCDC_Stop(&g_display0_ctrl);
+        if (!error)
+        {
+            break;
+        }
+        rt_thread_mdelay(1);
+    } while (!test_elapsed(start, 100));
+    /* Stop 仅提交请求；Close 需等下一帧停稳。静态配置对象保证超时后仍有效。 */
+    start = rt_tick_get();
+    do
+    {
+        error = R_GLCDC_Close(&g_display0_ctrl);
+        if (!error)
+        {
+            break;
+        }
+        rt_thread_mdelay(1);
+    } while (!test_elapsed(start, 100));
+    if (error)
+    {
+        rt_kprintf("LCD close=%d; reset before further display tests\n", error);
+    }
+    return error == FSP_SUCCESS ? TEST_PASS : -RT_ERROR;
+}
+
+/* 按生成帧缓冲的 stride 写入，不能假设每行恰好 480 个像素。 */
+static void show_test_colors(uint16_t *pixels)
+{
+    static const uint16_t colors[] = {0xf800, 0x07e0, 0x001f, 0xffff, 0};
+    for (unsigned step = 0; step < 5 && !test_cancelled(); ++step)
+    {
+        for (unsigned y = 0; y < 272; ++y)
+        {
+            for (unsigned x = 0; x < 480; ++x)
+            {
+                pixels[y * DISPLAY_BUFFER_STRIDE_PIXELS_INPUT0 + x] = colors[step];
+            }
+        }
+        rt_kprintf("LCD color=%04X\n", colors[step]);
+        rt_thread_mdelay(350);
+    }
+}
+
 int test_lcd(const char *stage)
 {
-    static const uint16_t colors[]={0xf800,0x07e0,0x001f,0xffff,0};
-    static display_cfg_t cfg;
-    cfg=g_display0_cfg;
-    uint16_t *pixels=(uint16_t *)fb_background[0];
-    int result=-RT_ERROR,pwm=0;
-    if(strcmp(stage,"colors") && strcmp(stage,"backlight")) return -RT_EINVAL;
-    cfg.output.htiming.total_cyc=531;cfg.output.htiming.back_porch=43;cfg.output.htiming.sync_width=2;
-    cfg.output.vtiming.total_cyc=292;cfg.output.vtiming.back_porch=12;cfg.output.vtiming.sync_width=2;
-    cfg.p_callback=display_event;lcd_frames=0;
-    rt_pin_mode(BSP_IO_PORT_01_PIN_05,PIN_MODE_OUTPUT);rt_pin_write(BSP_IO_PORT_01_PIN_05,0);
-    rt_pin_mode(BSP_IO_PORT_01_PIN_00,PIN_MODE_OUTPUT);rt_pin_write(BSP_IO_PORT_01_PIN_00,0);
-    memset(pixels,0,DISPLAY_BUFFER_STRIDE_BYTES_INPUT0*272);
-    if(R_GLCDC_Open(&g_display0_ctrl,&cfg)) return -RT_ERROR;
-    if(R_GLCDC_Start(&g_display0_ctrl)) goto done;
-    rt_thread_mdelay(150);rt_pin_write(BSP_IO_PORT_01_PIN_05,1);rt_thread_mdelay(10);rt_pin_write(BSP_IO_PORT_01_PIN_00,1);
-    for(unsigned n=0;n<5 && !test_cancelled();++n) {
-        for(unsigned y=0;y<272;++y) for(unsigned x=0;x<480;++x) pixels[y*DISPLAY_BUFFER_STRIDE_PIXELS_INPUT0+x]=colors[n];
-        rt_kprintf("LCD color=%04X\n",colors[n]);rt_thread_mdelay(350);
+    static display_cfg_t display_config;
+    uint16_t *pixels = (uint16_t *)fb_background[0];
+    int result = -RT_ERROR;
+    int backlight_pwm_open = 0;
+    if (strcmp(stage, "colors") && strcmp(stage, "backlight"))
+    {
+        return -RT_EINVAL;
     }
-    if(!strcmp(stage,"backlight")) {
-        memset(pixels,0xff,DISPLAY_BUFFER_STRIDE_BYTES_INPUT0*272);
+    /* 模组已验收时序：有效区 480x272，下面是包含消隐的总周期。 */
+    display_config = g_display0_cfg;
+    display_config.output.htiming.total_cyc = 531;
+    display_config.output.htiming.back_porch = 43;
+    display_config.output.htiming.sync_width = 2;
+    display_config.output.vtiming.total_cyc = 292;
+    display_config.output.vtiming.back_porch = 12;
+    display_config.output.vtiming.sync_width = 2;
+    display_config.p_callback = display_event;
+    lcd_irq_count = 0;
+    rt_pin_mode(BSP_IO_PORT_01_PIN_05, PIN_MODE_OUTPUT);
+    rt_pin_write(BSP_IO_PORT_01_PIN_05, 0);
+    rt_pin_mode(BSP_IO_PORT_01_PIN_00, PIN_MODE_OUTPUT);
+    rt_pin_write(BSP_IO_PORT_01_PIN_00, 0);
+    memset(pixels, 0, DISPLAY_BUFFER_STRIDE_BYTES_INPUT0 * 272);
+    if (R_GLCDC_Open(&g_display0_ctrl, &display_config))
+    {
+        return -RT_ERROR;
+    }
+    if (R_GLCDC_Start(&g_display0_ctrl))
+    {
+        goto close_lcd;
+    }
+    /* 先让 RGB 时序稳定，再依次打开共用使能与背光。 */
+    rt_thread_mdelay(150);
+    rt_pin_write(BSP_IO_PORT_01_PIN_05, 1);
+    rt_thread_mdelay(10);
+    rt_pin_write(BSP_IO_PORT_01_PIN_00, 1);
+    show_test_colors(pixels);
+    if (strcmp(stage, "backlight") == 0)
+    {
+        memset(pixels, 0xff, DISPLAY_BUFFER_STRIDE_BYTES_INPUT0 * 272);
+        /* 恢复 P100 的 GPT5 复用，将恒亮 GPIO 切换为 PWM 调光。 */
         test_restore_pin(BSP_IO_PORT_01_PIN_00);
-        if(R_GPT_Open(&g_timer5_ctrl,&g_timer5_cfg)) goto done;
-        pwm=1;if(R_GPT_Start(&g_timer5_ctrl)) goto done;
-        for(unsigned n=0;n<=10 && !test_cancelled();++n) {
-            unsigned pct=n<=5?n*20:(10-n)*20;
-            if(R_GPT_DutyCycleSet(&g_timer5_ctrl,g_timer5_cfg.period_counts*pct/100,GPT_IO_PIN_GTIOCA)) goto done;
-            rt_kprintf("LCD brightness=%u%%\n",pct);rt_thread_mdelay(250);
+        if (R_GPT_Open(&g_timer5_ctrl, &g_timer5_cfg))
+        {
+            goto close_lcd;
         }
-    }
-    rt_kprintf("LCD interrupts=%u; color/brightness require visual confirmation\n",lcd_frames);
-    result=lcd_frames?TEST_WAIT:-RT_ERROR;
-done:
-    if(pwm) { R_GPT_Stop(&g_timer5_ctrl);R_GPT_Close(&g_timer5_ctrl); }
-    rt_pin_mode(BSP_IO_PORT_01_PIN_00,PIN_MODE_OUTPUT);rt_pin_write(BSP_IO_PORT_01_PIN_00,0);
-    rt_pin_write(BSP_IO_PORT_01_PIN_05,0);
-    rt_tick_t start=rt_tick_get();fsp_err_t err;
-    do { err=R_GLCDC_Stop(&g_display0_ctrl);if(!err) break;rt_thread_mdelay(1); } while(!test_elapsed(start,100));
-    /* Stop requests take effect at a frame boundary. Do not leave a live
-     * controller holding a dead configuration pointer after this function. */
-    start=rt_tick_get();
-    do { err=R_GLCDC_Close(&g_display0_ctrl);if(!err) break;rt_thread_mdelay(1); }
-    while(!test_elapsed(start,100));
-    if(err) { rt_kprintf("LCD close=%d; reset before further display tests\n",err);result=-RT_ERROR; }
-    return result;
-}
-static struct rt_i2c_bus_device *touch_bus;
-static uint16_t touch_addr;
-static int touch_read(uint16_t reg,uint8_t *data,uint16_t length)
-{
-    uint8_t index[2]={(uint8_t)(reg>>8),(uint8_t)reg};
-    struct rt_i2c_msg msgs[2]={{.addr=touch_addr,.flags=RT_I2C_WR,.buf=index,.len=2},
-                             {.addr=touch_addr,.flags=RT_I2C_RD,.buf=data,.len=length}};
-    return rt_i2c_transfer(touch_bus,msgs,2)==2?0:-RT_EIO;
-}
-int test_touch(const char *stage)
-{
-    uint8_t identity[11],status,points[40],ack[]={0x81,0x4e,0};unsigned frames=0;
-    if(strcmp(stage,"info") && strcmp(stage,"points")) return -RT_EINVAL;
-    touch_bus=(struct rt_i2c_bus_device *)rt_device_find("i2c1");if(!touch_bus) return -RT_ENOSYS;
-    rt_pin_mode(BSP_IO_PORT_08_PIN_01,PIN_MODE_OUTPUT);rt_pin_write(BSP_IO_PORT_08_PIN_01,0);
-    rt_pin_mode(BSP_IO_PORT_00_PIN_04,PIN_MODE_OUTPUT);rt_pin_write(BSP_IO_PORT_00_PIN_04,1);
-    rt_thread_mdelay(10);rt_pin_write(BSP_IO_PORT_08_PIN_01,1);rt_thread_mdelay(100);
-    rt_pin_mode(BSP_IO_PORT_00_PIN_04,PIN_MODE_INPUT);
-    touch_addr=0x14;
-    if(touch_read(0x8140,identity,sizeof(identity))) { touch_addr=0x5d;if(touch_read(0x8140,identity,sizeof(identity))) return -RT_EIO; }
-    unsigned width=identity[6]|identity[7]<<8,height=identity[8]|identity[9]<<8;
-    rt_kprintf("TOUCH addr=%02X id=%c%c%c%c range=%ux%u\n",touch_addr,identity[0],identity[1],identity[2],identity[3],width,height);
-    if(memcmp(identity,"911",3) || width!=480 || height!=272) return -RT_ERROR;
-    if(!strcmp(stage,"info")) return 0;
-    rt_tick_t start=rt_tick_get();
-    while(!test_elapsed(start,15000) && !test_cancelled()) {
-        if(touch_read(0x814e,&status,1)) return -RT_EIO;
-        if(status&0x80) {
-            unsigned count=status&0x0f;if(count>5) return -RT_ERROR;
-            if(count && touch_read(0x814f,points,count*8)) return -RT_EIO;
-            if(rt_i2c_master_send(touch_bus,touch_addr,0,ack,3)!=3) return -RT_EIO;
-            rt_kprintf("TOUCH N=%u",count);
-            for(unsigned i=0;i<count;++i) {
-                unsigned x=points[i*8+1]|points[i*8+2]<<8,y=points[i*8+3]|points[i*8+4]<<8;
-                if(x>=480 || y>=272) return -RT_ERROR;
-                rt_kprintf(" id=%u (%u,%u)",points[i*8],x,y);++frames;
+        backlight_pwm_open = 1;
+        if (R_GPT_Start(&g_timer5_ctrl))
+        {
+            goto close_lcd;
+        }
+        for (unsigned step = 0; step <= 10 && !test_cancelled(); ++step)
+        {
+            unsigned brightness_percent = step <= 5 ? step * 20 : (10 - step) * 20;
+            if (R_GPT_DutyCycleSet(&g_timer5_ctrl,
+                                   g_timer5_cfg.period_counts * brightness_percent / 100,
+                                   GPT_IO_PIN_GTIOCA))
+            {
+                goto close_lcd;
             }
-            rt_kprintf("\n");
+            rt_kprintf("LCD brightness=%u%%\n", brightness_percent);
+            rt_thread_mdelay(250);
         }
-        rt_thread_mdelay(10);
     }
-    rt_kprintf("TOUCH observed_points=%u; position/multitouch accuracy requires interaction\n",frames);
-    return TEST_WAIT;
+    rt_kprintf("LCD interrupts=%u; color/brightness require visual confirmation\n", lcd_irq_count);
+    result = lcd_irq_count ? TEST_WAIT : -RT_ERROR;
+close_lcd:
+    if (backlight_pwm_open)
+    {
+        R_GPT_Stop(&g_timer5_ctrl);
+        R_GPT_Close(&g_timer5_ctrl);
+    }
+    rt_pin_mode(BSP_IO_PORT_01_PIN_00, PIN_MODE_OUTPUT);
+    rt_pin_write(BSP_IO_PORT_01_PIN_00, 0);
+    rt_pin_write(BSP_IO_PORT_01_PIN_05, 0);
+    if (close_display() != TEST_PASS)
+    {
+        result = -RT_ERROR;
+    }
+    return result;
 }

@@ -149,7 +149,7 @@ hmi_test gpio keys
 
 ## P08/P09 LCD、背光和触摸
 
-源码：`src/test-display.c`。
+源码：`src/test-display.c`（LCD）、`src/test-touch.c`（GT911）。
 
 ```text
 hmi_test lcd colors
@@ -188,7 +188,7 @@ hmi_test rw007 adv
 
 ## P11 Arduino/Pmod/ADC 扩展接口
 
-源码：`src/test-pmod.c`、`src/test-gpio.c`。以下回环**先按表接跳线**，测试时取下会驱动同一线路的外接模块。建议 GPIO 输出到输入串联 1 kΩ，使用板上 3.3 V 电平。
+源码：`src/test-pmod.c`、`src/test-gpio.c`、`src/test-adc.c`。以下回环**先按表接跳线**，测试时取下会驱动同一线路的外接模块。建议 GPIO 输出到输入串联 1 kΩ，使用板上 3.3 V 电平。
 
 | 命令 | 接线 | 校验 |
 | --- | --- | --- |
@@ -228,6 +228,8 @@ hmi_test graphics g2d
 - 这两项可独立于 LCD 视觉效果判定硬件计算正确；没有据此声称视频播放或所有图形操作已覆盖。
 
 ## 维护和构建注意事项
+
+源码职责、注释约定、格式检查与主机回归方法见 `peripheral-code-quality.md`。
 
 `scripts/configure_peripheral_tests.py` 补全 Studio 头文件搜索路径；根 `SConscript` 声明 USB 源码。RTC/ADC 驱动与原工程 FSP v3.5.0 一致；TinyUSB 来源/许可见 `third_party/tinyusb/README.hmi.md`。
 

@@ -79,4 +79,6 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 ## 用户集中复测顺序
 
+2026-10-01 在继续 TF 验收前，按用户要求先完成代码可读性整改；重构内容、构建与独立回归证据见 `peripheral-code-quality.md`。重构版已重新验证网口回环及真实互联网访问，原验收记录保留。
+
 按使用手册从每项底层阶段开始，不跳过前置检查：网口 PHY→MAC→PHY loop→link→lwIP；TF info→read→file；CAN loop→bus；USB probe→echo；随后音频、按键/LED、屏幕/触摸、RTC、扩展口、RW007。准备网线/路由器、FAT 卡、CAN 对端、系统 USB 数据线、扬声器与跳线。无需更改测试源码，持续交互 UI 则使用 profile 选择脚本构建切换。
