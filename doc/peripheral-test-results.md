@@ -857,6 +857,22 @@ TEST IDLE
 
 启动时一次全 0 SPI 头异常仍保留，后续命令成功不代表底层零错误。下一项可先做 A0/P000 的 ADC 采样，再用已知 GND/3.3 V 输入进行端点验证。本次仅归档用户日志并更新状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：ADC A0 基础采样（2026-10-01）
+
+按本轮悬空采样步骤，用户提供以下日志；本次未提供已知输入电压：
+
+```text
+msh >hmi_test adc-sample
+TEST BEGIN adc-sample
+msh >ADC A0/P000 n=32 min=1495 max=1865 avg=1656 approx_mV=1334 (Vref assumed 3300mV)
+TEST RESULT adc-sample WAIT code=1 elapsed=11 ms
+TEST IDLE
+```
+
+结论：A0/P000 的 32 次 ADC 转换、统计和退出流程完成，耗时 11 ms。原始读数 1495～1865，均值 1656；1334 mV 是按参考电压 3300 mV 假设换算的均值，不是外部电压表测量结果。悬空输入没有固定目标值，本次 WAIT 合理，不能据此确认端点准确性、精度或噪声性能。
+
+下一步移除 A0 上可能存在的其他连接，用跳线将 Arduino A0/P000 接板上 GND，执行 `hmi_test adc-low`。例程要求 32 次采样的最大值小于 100 才 PASS；随后另行进行 3.3 V 高端测试。接线时先断电，确认针脚后再上电，保持原有调试串口接线。本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
