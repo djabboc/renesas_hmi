@@ -2,6 +2,54 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 用户逐项验收：GPIO 三路输入电平通过（2026-10-01）
+
+证据来源：用户本次回传的五次 `hmi_test gpio-inputs` 日志，当前固件 `8b3fb6b`。按此前指引，先全部松开，再分别按住三键，最后全部松开。程序只采样一次并返回 WAIT；结合实际操作与下表电平判定，本项人工验收通过。
+
+| 操作 / 日志顺序 | P005 | P006 | P007 | 耗时 |
+| --- | ---: | ---: | ---: | ---: |
+| 初始全部松开 | 1 | 1 | 1 | 7 ms |
+| 单键按住（P006） | 1 | 0 | 1 | 8 ms |
+| 单键按住（P005） | 0 | 1 | 1 | 8 ms |
+| 单键按住（P007） | 1 | 1 | 0 | 8 ms |
+| 最后全部松开 | 1 | 1 | 1 | 7 ms |
+
+三路输入均表现为松开高、按下低；每次单键按住时其他两路保持高电平，最后恢复全高。五次均正常返回 TEST IDLE。只记录引脚与电平关系，不据此推断实物按键左右排列；短按/长按与消抖的证据仍见此前 `gpio-keys` 记录。本轮仅归档文档，未修改代码、烧录或打开 COM8。
+
+原始日志（仅去除重复提示符和空行）：
+
+```text
+msh >hmi_test gpio-inputs
+TEST BEGIN gpio-inputs
+KEY levels P005=1 P006=1 P007=1 (pressed=0)
+TEST RESULT gpio-inputs WAIT code=1 elapsed=7 ms
+TEST IDLE
+
+msh >hmi_test gpio-inputs
+TEST BEGIN gpio-inputs
+KEY levels P005=1 P006=0 P007=1 (pressed=0)
+TEST RESULT gpio-inputs WAIT code=1 elapsed=8 ms
+TEST IDLE
+
+msh >hmi_test gpio-inputs
+TEST BEGIN gpio-inputs
+KEY levels P005=0 P006=1 P007=1 (pressed=0)
+TEST RESULT gpio-inputs WAIT code=1 elapsed=8 ms
+TEST IDLE
+
+msh >hmi_test gpio-inputs
+TEST BEGIN gpio-inputs
+KEY levels P005=1 P006=1 P007=0 (pressed=0)
+TEST RESULT gpio-inputs WAIT code=1 elapsed=8 ms
+TEST IDLE
+
+msh >hmi_test gpio-inputs
+TEST BEGIN gpio-inputs
+KEY levels P005=1 P006=1 P007=1 (pressed=0)
+TEST RESULT gpio-inputs WAIT code=1 elapsed=7 ms
+TEST IDLE
+```
+
 ## SSD1306 外接 I²C 基础显示验收与动画优化（2026-10-01）
 
 ### 动画优化版人工验收通过
@@ -1318,7 +1366,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 
 | 状态 | 项目与原因 |
 | --- | --- |
-| WAIT | `gpio-led`、`gpio-inputs`、`gpio-keys`：需要观察 LED、实际按键操作 |
+| LED 视觉待确认；输入已复测 | `gpio-inputs` 五次采样与逐键按住/松开一致，人工验收通过；`gpio-keys` 短按/长按记录见上文；`gpio-led` 仍需确认三颗 LED 实际变化 |
 | WAIT | `audio-tone`、`audio-replay`：播放采样数达到预期，声音内容/音质需试听 |
 | WAIT | `lcd-colors`、`lcd-backlight`、三个界面例程：程序和生命周期已检查，图像/触摸手感需目视操作 |
 | WAIT | `touch-points`、`touch-irq`：窗口内无人触摸，坐标和实际中断边沿需触摸复测 |
