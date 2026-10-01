@@ -2,6 +2,32 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 实体复位键：重新启动已观察，复位后状态待补充（2026-10-01）
+
+用户按复位测试指引提供日志：复位前 `hmi_test status` 显示 ready=1、busy=0，已有 gpio-inputs 5次、gpio-led 4次、pmod-i2c 1次运行记录；随后重新出现 RT-Thread 5.0.1 启动横幅、Hello RT-Thread 和 i2c1 注册信息，说明系统已重新启动并执行总线初始化。
+
+此日志中的 status 位于启动横幅之前，不能作为复位后调度器就绪、运行计数清零的证据。下一步无需再次复位，在当前启动完成后、运行其他测试之前执行一次 `hmi_test status`；预期只显示 `TEST STATUS ready=1 busy=0`，没有 `runs=...` 行。当前先记录重新启动部分通过，完整复位验收待该结果补齐。
+
+用户原始输出（仅去除重复空提示符）：
+
+```text
+msh >hmi_test status
+TEST STATUS ready=1 busy=0
+gpio-inputs runs=5 last=WAIT
+gpio-led runs=4 last=WAIT
+pmod-i2c runs=1 last=WAIT
+ \ | /
+- RT -     Thread Operating System
+ / | \     5.0.1 build Oct  1 2026 22:08:59
+ 2006 - 2022 Copyright by RT-Thread team
+
+Hello RT-Thread!
+msh >[0] I/I2C: I2C bus [i2c1] registered
+[0] D/NO_TAG: software simulation i2c1 init done, pin scl: 514, pin sda 515
+```
+
+本轮仅归档用户证据，未打开 COM8、修改代码或烧录。
+
 ## 用户逐项验收：三颗 LED 视觉确认通过（2026-10-01）
 
 用户按 `hmi_test gpio-led` 的指引观察后明确反馈：“三个LED 依次闪烁”。据此，P209/P210/P204 三颗 LED 的依次闪烁视觉验收通过，关闭此前缺少目视确认的待办。
