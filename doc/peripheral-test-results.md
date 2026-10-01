@@ -605,6 +605,42 @@ TEST IDLE
 
 本次仅归档用户日志并引导下一项，未修改/烧录固件，未打开 COM8；文档检查使用 `git diff --check`。
 
+### USB CDC 文本回显验收通过（2026-10-01）
+
+用户在固件 `1b36971` 上运行 `usb-echo`，同时提供电脑串口助手的十六进制收发记录。以下板端日志仅整理了粘贴产生的折行、空白和行尾转义痕迹，数值保持不变：
+
+```text
+msh >hmi_test usb-echo
+TEST BEGIN usb-echo
+msh >USB system connector VBUS=1; debug USB/COM8 is separate
+USB start: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB start: SYSSTS0=0001 INTSTS0=00C0 INTENB0=FD00 USBADDR=0000 NVIC=1
+USB start: irq=2 reset=0 setup=0 desc_device=0 desc_config=0
+USB waiting up to 15 seconds for host enumeration
+USB enumeration: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB enumeration: SYSSTS0=0001 INTSTS0=20B0 INTENB0=DD00 USBADDR=0002 NVIC=1
+USB enumeration: irq=48 reset=2 setup=13 desc_device=3 desc_config=4
+USB CDC configured, echo window 30s. Use the NEW COM port.
+USB mounted_events=1 rx=13 tx_queued=13 tx_complete_events=1
+TEST RESULT usb-echo WAIT code=1 elapsed=30341 ms
+TEST IDLE
+```
+
+电脑串口助手记录：
+
+```text
+[18:33:54.229] TX>
+48 65 6C 6C 6F 20 55 53 42 20 31 32 33
+[18:33:54.248] RX>
+48 65 6C 6C 6F 20 55 53 42 20 31 32 33
+```
+
+结论：13 字节 `Hello USB 123` 逐字节一致，基础文本 ECHO 验收通过。板端接收和发送排队均为 13 字节，并发生一次发送完成回调；主机记录进一步证明收到正确内容。两条主机记录相隔约 19 ms，仅为本次串口助手显示时间差，不作为 USB 性能基准。设备返回 WAIT 是设计行为：最终内容正确性需要主机比对，本次已有用户日志完成核对。
+
+用户观察到运行后 Windows 提示音，以及约 30 秒后再次提示音。这与枚举接入、回显窗口结束后例程主动断开 USB 的生命周期相符，不是连续掉线证据。此次也验证了此前 probe 退出后，echo 能重新枚举；尚未验证运行中的物理拔插、特殊二进制字节或跨包数据。下一步可在新的 echo 窗口用 HEX 模式发送 `00 01 7F 80 FE FF 0D 0A`，关闭自动追加换行及本地回显，核对原样返回。
+
+本次仅归档用户日志，未修改/烧录固件，未打开 COM8；文档经 `git diff --check` 检查。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
