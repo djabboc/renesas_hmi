@@ -917,6 +917,21 @@ TEST IDLE
 
 下一项为 GPIO 外接回环：断电后移除 P000 到 3.3 V 的跳线，按实际丝印连接 P008（Arduino D2，输出）与 P009（Arduino D9，输入），建议串联 1 kΩ；两个引脚不接其他外部信号。上电执行 `hmi_test gpio-loop`，逐次核对 16 次高低电平。本次仅归档用户日志和更新验收状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：GPIO 外接回环（2026-10-01）
+
+用户没有 1 kΩ 电阻，按本轮指引采用杜邦线直接连接 P008（Arduino D2）与 P009（Arduino D9）。本例程将 P008 配置为输出，P009 配置为输入；串联电阻用于误配置时限流，并非此项回环的必要条件。用户随后提供：
+
+```text
+msh >hmi_test gpio-loop
+TEST BEGIN gpio-loop
+msh >TEST RESULT gpio-loop PASS code=0 elapsed=35 ms
+TEST IDLE
+```
+
+结论：本项 GPIO 外接回环验收通过，耗时 35 ms。根据例程的 PASS 条件，P008 输出的 16 次高低电平均由 P009 正确读回。仅验证这两个引脚及当前跳线的低速数字输入/输出，不替代所有 GPIO、外部中断或高速接口测试。
+
+下一步断电并拆除 P008/P009 跳线，进行 Pmod0 SPI 回环：Pmod0 J1 的 2 脚 MOSI/P305 与 3 脚 MISO/P304 直接短接，移除该口其他外接模块，上电执行 `hmi_test pmod-spi0`，期望 8×64 字节 MATCH 和 PASS。本次只归档用户日志并更新状态，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -962,7 +977,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未执行外接条件验证 | `can-bus`、`gpio-loop`、`pmod-spi0/spi1/arduino/irq0/irq1`：缺少已确认的对端或跳线；ADC low/high 已在 2026-10-01 用户复测通过，见上方日志 |
+| 未执行外接条件验证 | `can-bus`、`pmod-spi0/spi1/arduino/irq0/irq1`：缺少已确认的对端或跳线；ADC low/high、GPIO loop 已在 2026-10-01 用户复测通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
