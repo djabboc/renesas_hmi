@@ -2,6 +2,51 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 用户逐项验收：LED 与按键（2026-10-01）
+
+证据来源：用户在本对话提供的串口日志；对应重构提交 `5b141e3`。本次仅整理记录，未重新打开 COM8 或运行板端测试。
+
+| 项目 | 实际结果 | 验收范围 |
+| --- | --- | --- |
+| `gpio-led` | `WAIT code=1`，2174 ms，正常返回 `TEST IDLE` | P209/P210/P204 输出序列执行完成；用户尚未确认三颗 LED 的实际变化，视觉验收待补充 |
+| `gpio-keys` | `PASS code=0`，15017 ms，正常返回 `TEST IDLE` | 三键按下/抬起检测通过，全部识别为 SHORT；长按识别尚未验证，事件次数与实际操作是否一致仍待用户确认 |
+
+整理后的原始输出（仅去除空行和重复提示符）：
+
+```text
+msh >hmi_test gpio-led
+TEST BEGIN gpio-led
+LED 0 pin=P209 active=0
+LED 1 pin=P210 active=0
+LED 2 pin=P204 active=1
+LED output sequence finished; visual confirmation required
+TEST RESULT gpio-led WAIT code=1 elapsed=2174 ms
+TEST IDLE
+
+msh >hmi_test gpio-keys
+TEST BEGIN gpio-keys
+KEY levels P005=1 P006=1 P007=1 (pressed=0)
+KEY 0 DOWN
+KEY 0 UP SHORT
+KEY 1 DOWN
+KEY 1 UP SHORT
+KEY 2 DOWN
+KEY 2 UP SHORT
+KEY 2 DOWN
+KEY 2 UP SHORT
+KEY 2 DOWN
+KEY 2 UP SHORT
+KEY 2 DOWN
+KEY 2 UP SHORT
+KEY 0 press=1 release=1
+KEY 1 press=1 release=1
+KEY 2 press=4 release=4
+TEST RESULT gpio-keys PASS code=0 elapsed=15017 ms
+TEST IDLE
+```
+
+日志中 KEY 2 有四次完整短按，不能仅凭重复次数判断为抖动，也不能在未核对实际操作前宣称消抖通过。后续补测：确认 LED 依次变化；重新运行 `hmi_test gpio-keys`，三键各短按一次，再将其中一键按住约 2 秒并松开，确认该次输出 `UP LONG`。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
