@@ -412,6 +412,23 @@ TEST IDLE
 
 本项验收通过：内置 16×16 灰色 baseline JPEG 完成硬件解码，解码行数为 16，首像素 RGB565 为 0x8410，全部 256 个像素均通过允许量化误差的通道校验；9ms 后正常退出。status=A1 为例程累计的回调状态位，程序已检查完成位及错误位。验证在内存中完成，不依赖 LCD，也不表示其他 JPEG 格式或大图解码均已覆盖。本次仅归档用户日志，未修改固件、未打开 COM8。
 
+## 用户逐项验收：CAN 内部回环（2026-10-01）
+
+当前固件为 `5193620`，用户提供日志：
+
+```text
+msh >hmi_test can-loop
+TEST BEGIN can-loop
+CAN 500k loop: TX ID=321, expected RX ID=321 same 8 bytes
+CAN tx=1 rx=1 errors=0
+TEST RESULT can-loop PASS code=0 elapsed=18 ms
+TEST IDLE
+```
+
+本项验收通过：500 kbit/s、标准数据帧 ID 0x321、每帧 8 字节，源码循环验证 8 组不同载荷，核对发送/接收事件、ID、帧类型、长度和内容，未记录错误事件，18ms 后正常退出。`tx=1 rx=1` 是最后一组的事件计数；程序每组开始前清零，因此不代表只测试了一组，也不是 8 组的累计收发数。
+
+内部回环不经过外部 XL2551 与接线，外部总线仍需 USB-CAN 或另一个正常工作的 CAN 节点配合 `can-bus` 验证；尚未确认用户的对端设备条件。本次仅归档用户日志，未修改固件、未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
