@@ -213,6 +213,8 @@ hmi_test rw007-adv
 
 复用已验证的原驱动，每项复位、执行、关闭；`adv` 保持约 15 秒供手机观察，返回 WAIT。固件初始全 FF SPI 应答会重试，日志保留该现象。
 
+2026-10-01，用户已确认手机可发现 `RW007-ED30`，并复核地址为 `FC:58:4A:A6:ED:30`，与模块查询结果一致；此前手工记录第二字节为56的差异已关闭。此结论覆盖广播可发现性与地址核对，不代表通用 BLE 串口功能通过。
+
 联网使用 `hmi_test rw007-internet <ssid> <password>`，或 `python scripts/test_rw007_internet.py --ssid Hotspot` 交互输入密码。凭据不写入源码。BLE 通用串口/遥控的固件限制仍见 `ble-capabilities.md`。
 
 ## P11 Arduino/Pmod/ADC 扩展接口
