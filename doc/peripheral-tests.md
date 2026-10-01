@@ -222,15 +222,32 @@ hmi_test rw007-adv
 | 命令 | 接线 | 校验 |
 | --- | --- | --- |
 | `hmi_test gpio-loop` | Arduino D2/P008 → D9/P009 | 16 次高低电平逐次比对 |
-| `hmi_test pmod-spi0` | Pmod0 J1 的 MOSI/P305（2脚）→ MISO/P304（3脚） | SCI6，1 MHz，8×64 字节回环 |
-| `hmi_test pmod-spi1` | Pmod1 J2 的 MOSI/P613（2脚）→ MISO/P614（3脚） | SCI7，同上 |
+| `hmi_test pmod-spi0` | Pmod0 J1 的 MOSI/P305（原理图 J1-3）→ MISO/P304（J1-5） | SCI6，1 MHz，8×64 字节回环 |
+| `hmi_test pmod-spi1` | Pmod1 J2 的 MOSI/P613（原理图 J2-3）→ MISO/P614（J2-5） | SCI7，同上 |
 | `hmi_test pmod-arduino` | Arduino D11/P512 → D12/P511 | SCI4，同上；D13/P204 为 SCK，D10/P712 为 CS |
-| `hmi_test pmod-irq0` | Pmod0 GPIO0/P211（8脚）→ IRQ/P708（7脚） | IRQ11，16 个双边沿中断 |
-| `hmi_test pmod-irq1` | Pmod1 GPIO0/P710（8脚）→ IRQ/P709（7脚） | IRQ10，同上 |
+| `hmi_test pmod-irq0` | Pmod0 GPIO0/P211（原理图 J1-4）→ IRQ/P708（J1-2） | IRQ11，16 个双边沿中断 |
+| `hmi_test pmod-irq1` | Pmod1 GPIO0/P710（原理图 J2-4）→ IRQ/P709（J2-2） | IRQ10，同上 |
 | `hmi_test pmod-i2c` | Arduino SCL/P202、SDA/P203 接 3.3 V I²C 设备，7 位地址 0x50，并共地/合适上拉 | 只读 1 字节应答；不校验该设备内容 |
 | `hmi_test adc-sample` | A0/P000，可先悬空观察 | 32 次转换、极值、均值，仅 WAIT |
 | `hmi_test adc-low` | A0/P000 接 GND | 所有读数 <100 |
 | `hmi_test adc-high` | A0/P000 接板上 3.3 V | 所有读数 >3995 |
+
+### Pmod 排序与方向
+
+以下采用 V3.1 原理图的奇偶交错针号，不混用通用 Pmod 文档中可能出现的按排连续编号。此前接线表将 MOSI/MISO 写成 2/3、GPIO0/IRQ 写成 8/7，均不能作为本板原理图针号使用，现已更正。
+
+从元件面看，按 `docs/picture/back.png` 的方向（USB 左、网口右），PMOD0 在上方两个 Pmod 插座中的右侧。以 PCB 上可见的两排焊脚为定位依据，从印有 PMOD0 的左端向右：
+
+| PCB 焊脚位置 | 第 1 列 | 第 2 列 | 第 3 列 | 第 4 列 | 第 5 列 | 第 6 列 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 靠板边的一排 | IRQ / 2 | IO0 / 4 | IO1 / 6 | IO2 / 8 | GND / 10 | 3V3 / 12 |
+| 靠板内、MCU 的一排 | CS / 1 | MOSI / 3 | MISO / 5 | SCK / 7 | GND / 9 | 3V3 / 11 |
+
+MOSI 与 MISO 在同一排，相邻。回环连接靠内排的第 2、3 列，即 P305/P304。方形焊盘是靠内排最左端的 J1-1/CS，作为计数起点。图中圆圈标的是 PCB 焊点，用于辨认位置；插座为弯脚结构，从板外正对插孔观察时视角改变，不能把本图左右、靠边/靠内直接当作插孔上下。不确定插孔对应关系时，断电后用通断档核对目标插孔与圈出的焊点。
+
+![PMOD0 MOSI/MISO 焊点定位](../docs/picture/pmod0-spi-pads.png)
+
+图片由工程原有 back.png 渲染图裁剪并标注；信号与原理图针号依据 V3.1 原理图 PDF 第 3 页 J1/J2，方向依据元件面图的方形 1 脚焊盘。短接 MOSI 与 MISO 不分跳线方向，关键是选中正确的一排和两个位置。
 
 ### ADC 接线位置：板上标的是 P000
 
