@@ -12,7 +12,7 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 
 | 任务 | 本轮实际结果 | 尚需最终复测 |
 | --- | --- | --- |
-| P01 网口 | PHY ID `001C:C816`；MAC 内部回环、PHY 数字回环各 12/12 帧通过，覆盖 60/512/1514 字节。派生 MAC `02:48:28:27:8D:3C`。 | `link/lwip` 无物理链路，SKIP；接路由器后验证 DHCP、DNS、HTTP 和拔插。回环不证明联网。 |
+| P01 网口 | 自测回环通过；2026-10-01 用户提供日志确认 phy/mac/phyloop/link/lwip 五阶段全部 PASS。MAC/PHY 回环各 12/12 帧，链路 100Mbps 全双工，DHCP/DNS/TCP/HTTP 内容校验通过，详情见下方复测记录。 | 网线拔出后的无链路检测、重新插入后 link/lwip 恢复仍待验证；未做长期稳定性/吞吐量测试。 |
 | P02 TF | SDHI 打开及卡检测可执行，`card_inserted=0`；`read/file` SKIP。 | 插 FAT16/32 卡后依次 info/read/file，确认新建文件 8192 字节读回一致。 |
 | P03 CAN | 内部回环 8 组载荷通过，最终 TX=1/RX=1/errors=0。 | CAN 收发器到外部节点尚未验证；500 kbit/s 对端回复 0x322。 |
 | P04 麦克风 | SSI/DTC 接收 8192 个双声道帧完成，左声道数据有变化，PASS；约 16026 Hz。 | 说话/静音对比、增益与音质。DMA 完成不能代替音质验收。 |
@@ -27,6 +27,22 @@ P01～P15 的测试入口、分级命令、接线与判定标准已实现/整理
 | P13 JPEG | 16×16 已知 JPEG 完成 16 行，status=A1，像素 0x8410；逐像素比较 PASS。 | 可选结合 LCD 观察；未声称覆盖全部 JPEG 格式。 |
 | P14 D/AVE 2D | 硬件红色背景/绿色矩形，角点 F800、中心 07E0，逐像素校验及重复运行 PASS。 | 后续可重复运行观察稳定性。 |
 | P15 调试接口 | SWD 烧录成功；UART9/COM8 收发命令和结果；每个采集进程退出释放端口。 | 外接调试排针与实体复位键需实物操作。 |
+
+## 用户实物复测：P01 网口（2026-10-01）
+
+证据来源：用户在本对话提供的完整串口输出；本次没有由助手重新打开 COM8 或运行测试。记录固件提交为 `97b1a5f` 对应测试套件，未因本轮日志修改固件。
+
+| 阶段 | 关键输出 | 结论 |
+| --- | --- | --- |
+| `hmi_test eth phy` | MAC `02:48:28:27:8D:3C`；PHY `001C:C816`，BMCR=1000，BMSR=7849；144 ms | PASS |
+| `hmi_test eth mac` | 60/512/1514 字节共 12/12 帧匹配，irq=21；214 ms | PASS |
+| `hmi_test eth phyloop` | 同样 12/12 帧匹配，irq=21；215 ms | PASS |
+| `hmi_test eth link` | link UP，speed/duplex enum=4（100Mbps 全双工），ECMR=00000066；1667 ms | PASS |
+| `hmi_test eth lwip` | DHCP IP `192.168.0.102`，网关及 DNS `192.168.0.1`；3265 ms | PASS |
+
+联网阶段解析 `www.msftconnecttest.com` 到 `23.205.151.12`，TCP 连接成功，HTTP status=200、received=187、expected_body=MATCH；统计 tx=13、rx=8、drops=0，输出 `INTERNET PASS result=0`。drops=0 是此测试接收路径的计数，不代表整个网络不存在丢包。五个阶段均正常返回 `TEST IDLE`。
+
+结论：网口从底层回环到真实互联网访问的功能复测通过。拔插恢复尚无日志，不标为通过。完成当前测试后拔掉网线运行 `hmi_test eth link`，应约 6 秒后 SKIP；再插回，依次重跑 `link` 和 `lwip`，应恢复 PASS。
 
 ## 已定位并修复的问题
 
