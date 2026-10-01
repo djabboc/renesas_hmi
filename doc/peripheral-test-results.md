@@ -484,6 +484,33 @@ TEST IDLE
 
 本项验收通过：独立重新初始化同一容量的卡，两次读取扇区 0，全部 512 字节比较一致；末尾签名字节为 55 AA，49ms 后正常退出。本阶段没有写入卡；55AA 不能单独证明 FAT32 格式或文件系统完整性，文件挂载与写入读回由下一项 `sd-file` 验证。本次助手仅归档用户日志，未打开 COM8。
 
+### TF 卡文件读写与随后只读复测通过
+
+用户在固件 `e1bb9a3` 上完成文件测试后，再次执行只读测试：
+
+```text
+msh >hmi_test sd-file
+TEST BEGIN sd-file
+SD P405 detect=1 (1=inserted, 0=absent)
+SD sectors=15613952 bytes/sector=512 clock=30000000 protected=0
+SD created 0:/HMI00.TST (retained for inspection)
+SD file remount/readback 8192 bytes MATCH
+TEST RESULT sd-file PASS code=0 elapsed=247 ms
+TEST IDLE
+
+msh >hmi_test sd-read
+TEST BEGIN sd-read
+SD P405 detect=1 (1=inserted, 0=absent)
+SD sectors=15613952 bytes/sector=512 clock=30000000 protected=0
+SD sector0 repeat-read matched, signature=55AA
+TEST RESULT sd-read PASS code=0 elapsed=49 ms
+TEST IDLE
+```
+
+文件读写验收通过：新建 HMI00.TST，写入 8192 字节，完成同步、关闭、卸载/重新挂载后，文件长度及全部数据比较一致，247ms 后正常退出。测试文件保留在卡上；没有格式化或覆盖旧文件。随后的独立只读例程再次初始化并验证扇区 0 两次读取一致，49ms 后正常退出，说明这次文件测试退出后仍能正常访问卡。
+
+TF 卡信息、只读和文件读写三个阶段均已通过；仍需在 TEST IDLE 时拔卡验证 detect=0/SKIP，再插回重新执行以验证恢复。尚未据此确认掉电持久性、写入中拔卡恢复或长期稳定性。本次仅归档用户日志，助手未打开 COM8。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
