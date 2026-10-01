@@ -1060,6 +1060,42 @@ TEST IDLE
 
 下一项为 Pmod0 外部中断回环：断电拆除 P512/P511 跳线，使用已通过 pmod-spi0 的同一个插座，连接 GPIO0/P211（J1-4）与 IRQ/P708（J1-2）。按原理图的对应列，另一排正对 MOSI/J1-3 的孔为 IO0/J1-4；正对 CS/J1-1 的孔为 IRQ/J1-2。这两个孔相邻，并非把原 MOSI/MISO 两孔直接换排（那样会接到 IO0/IO1）。此测试 GPIO0 为输出，IRQ 为输入，在无其他外接模块时可使用直接跳线。上电执行 `hmi_test pmod-irq0`，预期 edges=16 expected=16 和 PASS。本次仅归档用户日志，未修改或烧录固件、未打开 COM8；文档通过 `git diff --check` 后提交。
 
+## 用户逐项验收：Pmod IRQ 无边沿与同通道输入冲突修复（2026-10-01）
+
+用户确认连接 IRQ 与 IO0 后，分别执行两条命令，提供以下日志。尚未确认是否在两次命令之间移动了跳线，不假定两个插座同时接线：
+
+```text
+msh >hmi_test pmod-irq0
+TEST BEGIN pmod-irq0
+msh >PMOD irq0 GPIO->IRQ edges=0 expected=16
+TEST RESULT pmod-irq0 FAIL code=-1 elapsed=176 ms
+TEST IDLE
+
+msh >hmi_test pmod-irq1
+TEST BEGIN pmod-irq1
+msh >PMOD irq1 GPIO->IRQ edges=0 expected=16
+TEST RESULT pmod-irq1 FAIL code=-1 elapsed=177 ms
+TEST IDLE
+```
+
+结论：两项均未通过，旧日志只报告中断计数，不能区分跳线未连通与中断路由问题。静态检查发现独立于接线的明确配置缺陷：
+
+- P708 与 P006、P501 是 IRQ11 的候选输入；P709 与 P005 是 IRQ10 的候选输入。映射见 `board/ports/gpio_cfg.h`。
+- `ra_gen/pin_data.c` 默认使能按键 P006、P005 的 ISEL。旧例程再使能 P708 或 P709 的 ISEL，未撤销同编号其他输入，造成重复选择。
+- RA6M3 用户手册 R01UH0886EJ0110 Rev.1.10 第 20.2.5 节、PDF 第 484 页明确要求：同编号的 IRQn 只能在一个引脚上使能。已目视核对原文。重复选择不符合该要求，但未作单因素板测，不能声明用户当前接线也已正确或全部失败只由这一原因导致。
+
+两份独立 C 例程的修正：
+
+1. 保存目标输入、输出及同通道候选引脚的实际 PFS 配置。irq0 临时清除 P006/P501 的 ISEL，irq1 临时清除 P005 的 ISEL；保留它们的其他配置，测试退出后恢复实际原值。
+2. 直接按引脚调用 R_IOPORT_PinCfg，避免本工程 rt_pin_mode 重新打开整张引脚表、把按键 ISEL 再次使能。检查并打印 FSP 初始化/清理错误。
+3. 启用 ICU 前做 0/1/0/1/0 的低速接线检查，分别打印请求值、输出脚实际读回和 IRQ 输入脚实际读回。接线检查失败时不进入边沿计数。
+4. 起始电平稳定为低后清除旧请求并启用双边沿中断，翻转 16 次并逐次读回。必须同时满足 levels=16/16 和 edges=16 才 PASS；IRQCR、NVIC 和目标 ISEL 状态用于进一步诊断。
+5. 所有失败/取消路径均关闭已打开的 ICU 并恢复引脚；修正文件头原理图针号为 GPIO0=J1/J2-4、IRQ=J1/J2-2。保留单文件、单线程入口、无例程间调用的结构。
+
+验证：RT-Thread Studio 构建 0 错误、0 警告；DAP-LINK 烧录成功并复位，记录见 `logs/pmod-irq-isolation-build.log`。17 项主机工具/独立例程结构检查通过，`git diff --check` 通过。构建与主机检查不替代板上边沿计数及资源恢复验收。
+
+本轮未打开 COM8，修复后的板上验收仍待用户复测。先保持当前跳线运行 pmod-irq0；若 wire FAIL，再根据 pin 输出及已确认的插座映射核对另一组。只有接线与中断计数均通过才记录成功。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
@@ -1105,7 +1141,7 @@ RW007 复位后仍观察到首帧全 FF 并自动重试恢复，未隐藏该现�
 | SKIP | `sd-info`、`sd-read`、`sd-file`：未插 TF 卡，未实际读写文件 |
 | SKIP | `usb-probe`、`usb-echo`：系统 USB 未枚举，未验证主机回显 |
 | SKIP | `pmod-i2c`：外部 0x50 设备无响应 |
-| 未完成外接条件验证 | `can-bus`、`pmod-irq0/irq1` 待对端或接线。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已在 2026-10-01 用户复测通过，见上方日志 |
+| 未完成外接条件验证 | `can-bus` 待对端；`pmod-irq0/irq1` 用户测试均为 edges=0，已修正同通道输入冲突并增加电平诊断，待复测。ADC low/high、GPIO loop、Pmod SPI0/SPI1、Arduino SPI 已通过，见上方日志 |
 | 已复测通过 | `rw007-internet`：此前未发现 Hotspot，返回 FAIL 并退出；2026-10-01 用户复测完成热点关联、DHCP、DNS、TCP、HTTP 200 与正文 MATCH，PASS，7756 ms。详见上方热点联网验收日志 |
 
 热点失败后立即运行有线 lwIP、MAC/PHY 回环、JPEG、RW007 信息及触摸识别均正常；记录 `logs/mvp-internet-runtime.log` 与 `logs/mvp-final-regression.log`。网络凭据未写入源码，采集脚本对命令回显和异常消息脱敏。
