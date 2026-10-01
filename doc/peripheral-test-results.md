@@ -579,6 +579,32 @@ TEST IDLE
 
 官方中断顺序参考：https://github.com/renesas/fsp/blob/v3.5.0/ra/fsp/src/r_usb_basic/src/hw/r_usb_mcu.c 。下一步在电脑连接条件下重跑 `hmi_test usb-probe`，保留新增诊断行。USB 枚举与 ECHO 的板上验收仍未完成；本轮未打开 COM8。
 
+### 电脑 USB 枚举复验通过（2026-10-01）
+
+用户保持电脑 A-to-C 连接，在诊断固件 `1b36971` 上复测：
+
+```text
+msh >hmi_test usb-probe
+TEST BEGIN usb-probe
+msh >USB system connector VBUS=1; debug USB/COM8 is separate
+USB start: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB start: SYSSTS0=0001 INTSTS0=00C0 INTENB0=FD00 USBADDR=0000 NVIC=1
+USB start: irq=1 reset=0 setup=0 desc_device=0 desc_config=0
+USB waiting up to 15 seconds for host enumeration
+USB enumeration: VBUS_pin=1 VBSTS=1 DPRPU=1 UCK=40 SYSCFG=0411
+USB enumeration: SYSSTS0=0001 INTSTS0=20B0 INTENB0=DD00 USBADDR=0002 NVIC=1
+USB enumeration: irq=47 reset=2 setup=13 desc_device=3 desc_config=4
+USB mounted_events=1 rx=0 tx_queued=0 tx_complete_events=0
+TEST RESULT usb-probe PASS code=0 elapsed=383 ms
+TEST IDLE
+```
+
+结论：电脑端基本枚举验收通过。USB 中断进入 47 次、总线复位 2 次、SETUP 请求 13 次，设备/配置描述符回调分别 3/4 次；主机分配地址 2，完成 SET_CONFIGURATION 并触发一次挂载回调。耗时 383 ms，说明本次成功并不需要超过原有 5 秒窗口。中断顺序修正后复测成功，但未做单因素对照，不能将全部原因唯一归结于该修改。
+
+本项确认数据链路能够完成枚举；rx/tx 为 0 属于 probe 的预期行为，尚未验证 CDC ECHO、连续拔插或安卓手机连接。下一项执行 `hmi_test usb-echo`，在 30 秒窗口内打开系统 USB 新增的 COM 端口，关闭串口助手本地回显，发送数据并核对收到的字节。测试结束设备主动断开，新端口消失属于例程清理行为；超时可等 TEST IDLE 后重新执行。
+
+本次仅归档用户日志并引导下一项，未修改/烧录固件，未打开 COM8；文档检查使用 `git diff --check`。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
