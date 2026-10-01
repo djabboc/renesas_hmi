@@ -3,7 +3,7 @@
  * @file test-lcd-backlight.c
  * @brief 验证 ST7282 背光 PWM 明暗变化。
  *
- * 先建立 RGB 时序，再切换 P100 为 GPT5 PWM，按 0→100→0% 调光。
+ * 先建立 RGB 时序，再切换 P100 为 GPT5 的 B 输出，按 0→100→0% 调光。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
  * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
  */
@@ -146,6 +146,12 @@ static int run_test(void)
         goto close_lcd;
     }
     backlight_pwm_open = 1;
+    /* P100 对应 GTIOC5B；修改 A 输出不会改变这根引脚的占空比。
+     * 启动前先设为 0%，避免默认的 50% 占空比造成短暂亮屏。 */
+    if (R_GPT_DutyCycleSet(&g_timer5_ctrl, 0, GPT_IO_PIN_GTIOCB) != FSP_SUCCESS)
+    {
+        goto close_lcd;
+    }
     if (R_GPT_Start(&g_timer5_ctrl) != FSP_SUCCESS)
     {
         goto close_lcd;
@@ -163,12 +169,18 @@ static int run_test(void)
         }
         if (R_GPT_DutyCycleSet(&g_timer5_ctrl,
                                g_timer5_cfg.period_counts * brightness_percent / 100,
-                               GPT_IO_PIN_GTIOCA) != FSP_SUCCESS)
+                               GPT_IO_PIN_GTIOCB) != FSP_SUCCESS)
         {
             goto close_lcd;
         }
-        rt_kprintf("LCD brightness=%u%%\n", brightness_percent);
-        rt_thread_mdelay(250);
+        rt_kprintf("LCD P100/GTIOC5B duty=%u%%; observe for 1 second\n", brightness_percent);
+        /* 每档保持 1 秒便于观察；分段等待，使 stop 最多约 20ms 后被检查。
+         * 占空比是高电平时间比例，不代表人眼感知亮度按同一比例变化。 */
+        rt_tick_t step_start = rt_tick_get();
+        while (!test_elapsed(step_start, 1000) && !test_cancelled())
+        {
+            rt_thread_mdelay(20);
+        }
     }
 
     rt_kprintf("LCD interrupts=%u; color/brightness require visual confirmation\n", lcd_irq_count);

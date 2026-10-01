@@ -73,6 +73,46 @@ TEST IDLE
 
 结论：结合首轮日志，三键短按、长按及按下/抬起识别均已有证据。本轮 KEY 0 最后一次 DOWN 在测试窗口结束前没有对应 UP，记录为未完成的一次操作，不据此判断硬件故障。源码固定采样 15 秒；PASS 只要求每个键至少检测到一次按下和一次释放，不要求最终累计次数相等，也不会等待最后一个键松开。是否在窗口结束后才松手尚未经用户确认。本次只更新验收文档，不修改固件。
 
+## 用户逐项验收：LCD 五色与背光问题（2026-10-01）
+
+用户确认“五色正常”，但反馈“背光变化不明显”。本次用户日志来自修复前的固件，整理如下：
+
+```text
+msh >hmi_test lcd-colors
+TEST BEGIN lcd-colors
+LCD color=F800
+LCD color=07E0
+LCD color=001F
+LCD color=FFFF
+LCD color=0000
+LCD interrupts=138; color/brightness require visual confirmation
+TEST RESULT lcd-colors WAIT code=1 elapsed=2156 ms
+TEST IDLE
+
+msh >hmi_test lcd-backlight
+TEST BEGIN lcd-backlight
+LCD brightness=0%
+LCD brightness=20%
+LCD brightness=40%
+LCD brightness=60%
+LCD brightness=80%
+LCD brightness=100%
+LCD brightness=80%
+LCD brightness=60%
+LCD brightness=40%
+LCD brightness=20%
+LCD brightness=0%
+LCD interrupts=188; color/brightness require visual confirmation
+TEST RESULT lcd-backlight WAIT code=1 elapsed=2936 ms
+TEST IDLE
+```
+
+- 五色：程序流程结束，结合用户目视确认，本项验收通过。
+- 背光：未通过视觉验收。排查发现 `configuration.xml` 将 P100 配置为 `gpt5.gtiocb`，但例程调用 `R_GPT_DutyCycleSet` 时误选 `GPT_IO_PIN_GTIOCA`。FSP 分别更新 A/B 的比较和强制占空比寄存器，因此调用返回成功也无法改变 P100；B 输出保留生成配置的初始 50% 占空比。GLCDC 中断仅证明显示扫描在运行，不能证明 PWM 变化。
+- 修复：选择 `GPT_IO_PIN_GTIOCB`，启动定时器前设置 0%，每档观察时间由 250ms 延长到 1 秒，并每 20ms 检查停止请求。日志明确显示 P100/GTIOC5B 的请求占空比；人眼亮度不要求与占空比线性对应。
+- 修复验证：RT-Thread Studio 构建 0 错误、0 警告，DAP-LINK 烧录完成；17 项主机回归通过。构建/烧录记录为 `logs/lcd-backlight-channel-fix-build.log`。本次未打开 COM8，未自动运行板端例程，留给用户观察实际明暗变化。
+- 修复后的实物明暗变化仍待用户复验，不将构建成功视为视觉验收通过。
+
 ## 构建与结构检查
 
 - RT-Thread Studio：0 错误、0 警告，DAP-LINK 烧录成功。最终构建记录 `logs/mvp-build-delivery.log`。
