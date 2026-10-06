@@ -19,6 +19,7 @@
 !/doc/audio-raw-results.md
 !/doc/audio-record.md
 !/doc/audio-wire-check.md
+!/doc/audio-debug-handoff.md
 /logs
 /workspace
 /RTE
