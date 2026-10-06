@@ -123,7 +123,7 @@ class IndependentExampleTests(unittest.TestCase):
     def test_each_file_has_one_entry_registered_exactly_once(self):
         main = (self.root / "src/test-main.c").read_text(encoding="utf-8")
         files = list((self.root / "src/test").glob("*.c"))
-        self.assertEqual(len(files), 45)
+        self.assertEqual(len(files), 46)
         for path in files:
             with self.subTest(path=path.name):
                 source = path.read_text(encoding="utf-8")

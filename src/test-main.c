@@ -24,6 +24,7 @@ extern void test_adc_low_thread(void *argument);
 extern void test_adc_sample_thread(void *argument);
 extern void test_audio_mic_thread(void *argument);
 extern void test_audio_replay_thread(void *argument);
+extern void test_audio_song_thread(void *argument);
 extern void test_audio_tone_thread(void *argument);
 extern void test_can_bus_thread(void *argument);
 extern void test_can_loop_thread(void *argument);
@@ -80,6 +81,7 @@ static struct test_case test_cases[] = {
     {"adc-sample", test_adc_sample_thread, 0, 0},
     {"audio-mic", test_audio_mic_thread, 0, 0},
     {"audio-replay", test_audio_replay_thread, 0, 0},
+    {"audio-song", test_audio_song_thread, 0, 0},
     {"audio-tone", test_audio_tone_thread, 0, 0},
     {"can-bus", test_can_bus_thread, 0, 0},
     {"can-loop", test_can_loop_thread, 0, 0},
