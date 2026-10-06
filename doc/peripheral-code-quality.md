@@ -55,7 +55,7 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 | `adc-low` | 验证 ADC 接近零电压的读数。 | A0/P000 接 GND；32 次采样均应低于 100 LSB；结束恢复引脚。 |
 | `adc-sample` | 报告 Arduino A0 的 ADC 原始采样值。 | A0/P000 对应 ADC0 通道 0；采样 32 次；悬空读数不能证明精度。 |
 | `audio-mic` | 验证 SSI0/DTC 麦克风采样链路。 | GPT1 提供采样时钟；采集左声道，统计幅度和变化数；声音质量仍需实际发声确认。 |
-| `audio-replay` | 独立完成麦克风录音和扬声器回放。 | 本次先采集再回放，不依赖其他例程的录音；先停 DMA/定时器再释放缓冲。 |
+| `audio-replay` | 独立完成麦克风录音和扬声器回放。 | 3 秒倒计时、约 1 秒录音、1 秒停声间隔、回放；16 位采样复用 64KB 缓冲，原地单声道/去直流/有限增益/淡入淡出；先关闭硬件再释放缓冲。 |
 | `audio-tone` | 通过 GPT6 差分 PWM 播放固定提示音。 | GPT2 按采样率更新占空比；播放约半秒后关闭两个定时器，结果等待试听。 |
 | `can-bus` | 验证 CAN0 和 XL2551 的外部总线收发。 | 接 500 kbit/s 对端及共地；对端收到 0x321 后用 0x322 回复相同 8 字节。 |
 | `can-loop` | 验证 CAN0 内部回环收发。 | 无需对端；500 kbit/s，邮箱发送 0x321 并比对数据，不验证外部收发器。 |
@@ -104,3 +104,13 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 基础板测：`python scripts/test_peripherals.py`。脚本逐条创建测试，不执行固件 `all`，结束/异常都释放串口。
 
 结构检查覆盖文件/入口/命令一一对应、测试中没有 MSH 和线程创建、无自定义测试头文件、无跨例程入口调用，以及 `hal_entry.c` 的原始 SHA-256。实际板上结果与仍需外部接线的项目见 `peripheral-test-results.md`；编译和结构检查不能替代实物验收。
+
+## 音频回放 PCM 算术验证
+
+`scripts/validate_audio_replay.py` 从实际 `test-audio-replay.c` 提取 PCM 处理、PWM 回调及可取消等待函数，以 Studio ARM GCC 编译并在 ARM 模拟器执行。6 组检查覆盖左右声道与直流、常量输入、正负满幅、最大增益、PWM 限幅与错误、协作停止，缓冲前后加哨兵检查越界。它检查实际软件算术，不能替代 16 位 SSI/DTC 实物采样与人耳试听。
+
+```powershell
+python scripts/validate_audio_replay.py --dependencies logs/oled-validation/python
+```
+
+依赖 Python 包 `unicorn`、`pyelftools`；上例复用 OLED 验证环境，首次使用可安装到指定独立目录再通过 `--dependencies` 引用。
