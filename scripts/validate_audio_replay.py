@@ -1,4 +1,4 @@
-"""在 ARM 模拟器中执行实际回放代码的 PCM 处理与 PWM 回调。
+"""在 ARM 模拟器中执行实际回放代码的 PCM24 转换、采集生命周期与 PWM 回调。
 
 验证软件算术与缓冲边界，不访问串口，也不替代 SSI/DTC 或实际听音。
 依赖 unicorn、pyelftools；可复用 OLED 验证环境：
@@ -52,7 +52,7 @@ STUB = r'''#include <stdint.h>
 #define BSP_IO_PORT_07_PIN_03 0x703
 #define I2S_EVENT_RX_FULL 2
 #define I2S_EVENT_IDLE 0
-#define I2S_PCM_WIDTH_16_BITS 16
+#define I2S_PCM_WIDTH_24_BITS 24
 #define I2S_WORD_LENGTH_32_BITS 32
 #define I2S_WS_CONTINUE_ON 0
 #define BSP_IO_PORT_04_PIN_03 0x403
@@ -96,7 +96,7 @@ static volatile unsigned capture_end_ssicr, capture_end_ssisr, capture_end_ssifs
 static unsigned ssi_reads, ssi_stops, ssi_closes, ssi_active, ssi_started, ssi_pending_idle;
 static unsigned ssi_freeze, ssi_no_idle, ssi_early_idle, ssi_read_fail, ssi_open_fail, ssi_stop_fail;
 static unsigned continuous_seen;
-static int16_t *ssi_buffer;
+static uint32_t *ssi_buffer;
 static void (*ssi_callback)(i2s_callback_args_t *);
 static int R_SSI_Stop(ssi_instance_ctrl_t *ctrl);
 static void mock_capture_step(void);
@@ -174,7 +174,8 @@ static int R_GPT_Close(gpt_instance_ctrl_t *ctrl)
 static int R_SSI_Open(ssi_instance_ctrl_t *ctrl, const i2s_cfg_t *cfg)
 {
     if (ssi_open_fail) { return 7; }
-    ctrl->open = 1; ctrl->fifo_access_size = 1; ssi_callback = cfg->p_callback;
+    if (cfg->pcm_width != I2S_PCM_WIDTH_24_BITS || cfg->word_length != I2S_WORD_LENGTH_32_BITS) { return 7; }
+    ctrl->open = 1; ctrl->fifo_access_size = 2; ssi_callback = cfg->p_callback;
     mock_ssi.SSIOFR = 0;
     if (cfg->ws_continue == I2S_WS_CONTINUE_ON) { mock_ssi.SSIOFR = 0x100; }
     return FSP_SUCCESS;
@@ -213,12 +214,12 @@ static void mock_capture_step(void)
     {
         ssi_active = 0; ssi_callback(&args); return;
     }
-    if (ssi_active && !ssi_freeze && clock_ms - ssi_started >= 1023)
+    if (ssi_active && !ssi_freeze && clock_ms - ssi_started >= 512)
     {
-        for (unsigned index = 0; index < 32768; ++index)
+        for (unsigned index = 0; index < 16384; ++index)
         {
             ssi_buffer[index] = 0;
-            if (index % 2 == 0) { ssi_buffer[index] = 1000; }
+            if (index % 2 == 0) { ssi_buffer[index] = 256000; }
         }
         args.event = I2S_EVENT_RX_FULL; ssi_callback(&args);
     }
@@ -228,7 +229,12 @@ static void mock_capture_step(void)
 
 HARNESS = r'''
 unsigned test_error, tests_passed;
-static struct { uint32_t before; int16_t samples[AUDIO_FRAMES * 2]; uint32_t after; } guarded;
+static struct
+{
+    uint32_t before;
+    union { int16_t samples[AUDIO_CAPTURE_BYTES / sizeof(int16_t)]; uint32_t raw[AUDIO_FRAMES * 2]; };
+    uint32_t after;
+} guarded;
 #define CHECK(condition) do { if (!(condition)) { test_error = __LINE__; return; } } while (0)
 static void reset_capture(void)
 {
@@ -251,10 +257,9 @@ void validate(void)
     guarded.after = 0x87654321;
     for (unsigned i = 0; i < AUDIO_FRAMES; ++i)
     {
-        samples[i * 2] = 5000;
-        if (i % 32 < 16) { samples[i * 2] += 1000; }
-        else { samples[i * 2] -= 1000; }
-        samples[i * 2 + 1] = -20000; /* 右声道不得影响左声道输出。 */
+        samples[i] = 5000;
+        if (i % 32 < 16) { samples[i] += 1000; }
+        else { samples[i] -= 1000; }
     }
     CHECK(prepare_playback(samples) == TEST_PASS);
     CHECK(samples[320] == 3000 && samples[336] == -3000);
@@ -266,17 +271,15 @@ void validate(void)
 
     for (unsigned i = 0; i < AUDIO_FRAMES; ++i)
     {
-        samples[i * 2] = -1234;
-        samples[i * 2 + 1] = (int16_t)i;
+        samples[i] = -1234;
     }
     CHECK(prepare_playback(samples) == -RT_ERROR); /* 全直流没有可回放声音。 */
     ++tests_passed;
 
     for (unsigned i = 0; i < AUDIO_FRAMES; ++i)
     {
-        samples[i * 2] = INT16_MIN;
-        if (i % 2) { samples[i * 2] = INT16_MAX; }
-        samples[i * 2 + 1] = 0;
+        samples[i] = INT16_MIN;
+        if (i % 2) { samples[i] = INT16_MAX; }
     }
     CHECK(prepare_playback(samples) == TEST_PASS);
     CHECK(samples[320] < 0 && samples[321] > 0);
@@ -288,9 +291,8 @@ void validate(void)
 
     for (unsigned i = 0; i < AUDIO_FRAMES; ++i)
     {
-        samples[i * 2] = -1001;
-        if (i % 2) { samples[i * 2] = -999; }
-        samples[i * 2 + 1] = 32767;
+        samples[i] = -1001;
+        if (i % 2) { samples[i] = -999; }
     }
     CHECK(prepare_playback(samples) == TEST_PASS);
     CHECK(samples[320] == -8 && samples[321] == 8); /* 只允许最多 8 倍增益。 */
@@ -376,50 +378,80 @@ void validate(void)
     }
     ++tests_passed;
     reset_capture();
-    CHECK(capture_audio(samples) == TEST_PASS);
+    CHECK(capture_audio(guarded.raw) == TEST_PASS);
     CHECK(ssi_reads == 2 && ssi_stops == 2 && ssi_closes == 1 && continuous_seen == 1);
-    CHECK(clock_ms >= 5046 && clock_ms < 5100 && capture_rx_events == 1);
-    CHECK(samples[0] == 1000 && samples[1] == 0);
+    CHECK(clock_ms >= 4024 && clock_ms < 4080 && capture_rx_events == 1);
+    CHECK(guarded.raw[0] == 256000 && guarded.raw[1] == 0);
     CHECK(!g_i2s0_ctrl.open && !g_timer_ctrl.open && !ssi_active);
     CHECK(guarded.before == 0x12345678 && guarded.after == 0x87654321);
     ++tests_passed;
 
-    const unsigned cancel_times[] = {3, 2000, 4100};
+    const unsigned cancel_times[] = {3, 2000, 3600};
     for (unsigned index = 0; index < 3; ++index)
     {
         reset_capture(); stop_at = cancel_times[index];
-        CHECK(capture_audio(samples) == -RT_EINTR);
+        CHECK(capture_audio(guarded.raw) == -RT_EINTR);
         CHECK(ssi_closes == 1 && !g_i2s0_ctrl.open && !g_timer_ctrl.open && !ssi_active);
         CHECK(open_calls == close_calls);
     }
     ++tests_passed;
 
     reset_capture(); ssi_freeze = 1;
-    CHECK(capture_audio(samples) == -RT_ETIMEOUT && clock_ms < 2050);
+    CHECK(capture_audio(guarded.raw) == -RT_ETIMEOUT && clock_ms < 2050);
     CHECK(ssi_stops == 1 && ssi_closes == 1 && !ssi_active && open_calls == close_calls);
     reset_capture(); ssi_early_idle = 1;
-    CHECK(capture_audio(samples) == -RT_ERROR);
+    CHECK(capture_audio(guarded.raw) == -RT_ERROR);
     CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
     ++tests_passed;
 
     for (unsigned failure = 1; failure <= 2; ++failure)
     {
         reset_capture(); ssi_read_fail = failure;
-        CHECK(capture_audio(samples) == -RT_ERROR);
+        CHECK(capture_audio(guarded.raw) == -RT_ERROR);
         CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
         reset_capture(); failed_operation = failure;
-        CHECK(capture_audio(samples) == -RT_ERROR);
+        CHECK(capture_audio(guarded.raw) == -RT_ERROR);
         CHECK(!g_timer_ctrl.open && !g_i2s0_ctrl.open && open_calls == close_calls);
     }
     reset_capture(); ssi_open_fail = 1;
-    CHECK(capture_audio(samples) == -RT_ERROR && ssi_closes == 0 && open_calls == close_calls);
+    CHECK(capture_audio(guarded.raw) == -RT_ERROR && ssi_closes == 0 && open_calls == close_calls);
     ++tests_passed;
 
     reset_capture(); ssi_stop_fail = 1;
-    CHECK(capture_audio(samples) == -RT_ERROR && ssi_closes == 1 && !ssi_active);
+    CHECK(capture_audio(guarded.raw) == -RT_ERROR && ssi_closes == 1 && !ssi_active);
     reset_capture(); ssi_no_idle = 1;
-    CHECK(capture_audio(samples) == -RT_ETIMEOUT && clock_ms < 1100);
+    CHECK(capture_audio(guarded.raw) == -RT_ETIMEOUT && clock_ms < 1100);
     CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
+    ++tests_passed;
+    CHECK(pcm24_signed(0x00000000) == 0 && pcm24_signed(0x007FFFFF) == 8388607);
+    CHECK(pcm24_signed(0x00800000) == -8388608 && pcm24_signed(0xFFFFFFFF) == -1);
+    CHECK(pcm24_signed(0xFF7FFFFF) == 8388607 && pcm24_signed(0xAA800000) == -8388608);
+    const uint32_t raw_stereo[] = {0x007FFFFF, 0, 0x00800000, 0, 0x007FFFFF, 0, 0x00800000, 0};
+    measure_pcm24(raw_stereo, 4, 2, &statistics);
+    CHECK(statistics.minimum == -8388608 && statistics.maximum == 8388607 && statistics.mean == 0);
+    CHECK(statistics.ac_peak == 8388608 && statistics.mean_abs_ac == 8388607 && statistics.clipped_samples == 4);
+    measure_pcm24(raw_stereo + 1, 4, 2, &statistics);
+    CHECK(statistics.mean_abs_ac == 0 && statistics.changed_samples == 0 && statistics.zero_samples == 4);
+    ++tests_passed;
+
+    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
+    {
+        guarded.raw[index * 2] = 0x007FFFFF;
+        if (index % 2) { guarded.raw[index * 2] = 0x00800000; }
+        guarded.raw[index * 2 + 1] = index; /* 右声道不能串入单声道转换结果。 */
+    }
+    guarded.raw[4] = 0x00FFFF00; /* -256 -> -1 */
+    guarded.raw[6] = 0x00FFFF01; /* -255 -> 0，按整数除法向零取整。 */
+    inspect_capture(guarded.raw);
+    convert_left_pcm24(guarded.raw);
+    CHECK(samples[0] == 32767 && samples[1] == -32768 && samples[2] == -1 && samples[3] == 0);
+    for (unsigned index = 4; index < AUDIO_FRAMES; ++index)
+    {
+        if (index % 2) { CHECK(samples[index] == -32768); }
+        else { CHECK(samples[index] == 32767); }
+    }
+    CHECK(guarded.before == 0x12345678 && guarded.after == 0x87654321);
+    CHECK(prepare_playback(samples) == TEST_PASS && samples[320] > 0 && samples[321] < 0);
     ++tests_passed;
     CHECK(max_log_bytes < 126);
     ++tests_passed;
@@ -441,7 +473,8 @@ def main() -> int:
     definitions = "\n".join(re.findall(r"^#define AUDIO_.*$", source, flags=re.MULTILINE))
     statistics_type = re.search(r"struct pcm_statistics\s*\{.*?\};", source, re.S).group(0)
     functions = "\n".join(extract_function(source, name)
-                          for name in ("measure_pcm", "print_pcm_statistics", "wait_ms", "mic_callback",
+                          for name in ("measure_pcm", "print_pcm_statistics", "pcm24_signed", "measure_pcm24",
+                                       "print_pcm24_statistics", "inspect_capture", "convert_left_pcm24", "wait_ms", "mic_callback",
                                        "close_timer", "wait_capture_idle", "capture_block", "capture_audio",
                                        "prepare_playback", "audio_tick", "play_audio", "play_reference"))
     output = ROOT / "logs/audio-validation"
@@ -468,9 +501,9 @@ def main() -> int:
     machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=30000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 17:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/17")
-    print("PASS: 17 ARM groups; warmup/record lifecycle, cancellation/timeouts/startup cleanup; PCM/DC/gain/PWM, channel stats, SSI callback, reference/EOF, errors/cleanup, log length")
+    if error or passed != 19:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/19")
+    print("PASS: 19 ARM groups; PCM24 sign/alignment/in-place conversion; warmup/record lifecycle, cancellation/timeouts/startup cleanup; PCM/DC/gain/PWM, channel stats, SSI callback, reference/EOF, errors/cleanup, log length")
     return 0
 
 

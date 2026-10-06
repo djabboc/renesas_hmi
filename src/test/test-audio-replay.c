@@ -4,7 +4,7 @@
  * @brief 独立完成麦克风录音和扬声器回放。
  *
  * 先播放参考音，再预热 SSI 麦克风时钟，倒计时后录音、回放和重播参考音。
- * SSI 采集 16 位双声道，在同一缓冲内提取左声道、去直流并有限调整幅度。
+ * SSI 采集 24 位双声道，显式符号扩展后在同一缓冲内转为 16 位左声道。
  * 先停 DMA/定时器再释放缓冲，硬件完成仍需结合人工试听。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
  * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
@@ -75,9 +75,9 @@ static int mute_output_pins(void)
     return result;
 }
 
-#define AUDIO_FRAMES 16384u
+#define AUDIO_FRAMES 8192u
 #define AUDIO_CHANNELS 2u
-#define AUDIO_CAPTURE_BYTES (AUDIO_FRAMES * AUDIO_CHANNELS * sizeof(int16_t))
+#define AUDIO_CAPTURE_BYTES (AUDIO_FRAMES * AUDIO_CHANNELS * sizeof(uint32_t))
 #define AUDIO_CAPTURE_TIMEOUT_MS 2000u
 #define AUDIO_PLAYBACK_TIMEOUT_MS 2000u
 #define AUDIO_PWM_PERIOD_COUNTS 1500u
@@ -91,7 +91,7 @@ static int mute_output_pins(void)
 #define AUDIO_REFERENCE_FRAMES 8192u
 #define AUDIO_BUFFER_GUARD 0x51A7C0DEu
 #define AUDIO_BUFFER_FILL_BYTE 0xA5u
-#define AUDIO_CAPTURE_FILL_WORD 0xA5A5u
+#define AUDIO_CAPTURE_FILL_WORD 0xA5A5A5A5u
 /* 这些完成标志/位置由中断更新，由测试线程轮询。 */
 static volatile unsigned capture_complete;
 static volatile unsigned capture_active;
@@ -194,39 +194,135 @@ static void print_pcm_statistics(const char *label, const int16_t *samples,
                statistics.changed_samples, statistics.clipped_samples);
 }
 
-/* 在压缩成单声道前观察原始 L/R 数据，分四段发现启动突变或发声时机问题。
- * 初始化的 A5A5 若大量残留，提示接收未覆盖缓冲；偶然同值不能判为未写入。 */
-static void inspect_capture(const int16_t *samples)
+/* SSI 的 PDTA 配置把 24 位数据右对齐在 32 位字中。
+ * 先取低 24 位，再显式扩展符号；避免依赖编译器对负数右移的处理。 */
+static int pcm24_signed(uint32_t word)
+{
+    int value = (int)(word & 0x00FFFFFFu);
+    if ((word & 0x00800000u) != 0)
+    {
+        value -= 0x01000000;
+    }
+    return value;
+}
+
+/* 原始 24 位统计与后续 16 位统计使用同样字段，但数值单位不同。
+ * 原始数据除以 256 后才处在 PCM16 的幅度单位，不能直接比较两个峰值。 */
+static void measure_pcm24(const uint32_t *samples, unsigned frames, unsigned stride,
+                          struct pcm_statistics *statistics)
+{
+    int64_t sum = 0;
+    uint64_t absolute_sum = 0;
+    memset(statistics, 0, sizeof(*statistics));
+    statistics->minimum = 8388607;
+    statistics->maximum = -8388608;
+    for (unsigned index = 0; index < frames; ++index)
+    {
+        int sample = pcm24_signed(samples[index * stride]);
+        sum += sample;
+        if (sample < statistics->minimum)
+        {
+            statistics->minimum = sample;
+        }
+        if (sample > statistics->maximum)
+        {
+            statistics->maximum = sample;
+        }
+        if (sample == 0)
+        {
+            ++statistics->zero_samples;
+        }
+        if (index > 0 && sample != pcm24_signed(samples[(index - 1u) * stride]))
+        {
+            ++statistics->changed_samples;
+        }
+        if (sample <= -8386560 || sample >= 8386560)
+        {
+            ++statistics->clipped_samples;
+        }
+    }
+    statistics->mean = (int)(sum / (int64_t)frames);
+    for (unsigned index = 0; index < frames; ++index)
+    {
+        int magnitude = pcm24_signed(samples[index * stride]) - statistics->mean;
+        if (magnitude < 0)
+        {
+            magnitude = -magnitude;
+        }
+        absolute_sum += (unsigned)magnitude;
+        if (magnitude > statistics->ac_peak)
+        {
+            statistics->ac_peak = magnitude;
+        }
+    }
+    statistics->mean_abs_ac = (unsigned)(absolute_sum / frames);
+}
+
+static void print_pcm24_statistics(const char *label, const uint32_t *samples,
+                                   unsigned frames, unsigned stride)
+{
+    struct pcm_statistics statistics;
+    measure_pcm24(samples, frames, stride, &statistics);
+    rt_kprintf("PCM24 %s n=%u min=%d max=%d mean=%d ac_peak=%d\n",
+               label, frames, statistics.minimum, statistics.maximum,
+               statistics.mean, statistics.ac_peak);
+    rt_kprintf("PCM24 %s mean_abs_ac=%u zero=%u changed=%u clipped=%u\n",
+               label, statistics.mean_abs_ac, statistics.zero_samples,
+               statistics.changed_samples, statistics.clipped_samples);
+}
+
+/* 原始 32 位字、符号扩展后的 24 位值、转换后的 PCM16 同时打印。
+ * 先观察左右声道和四段窗口，再转换；A5 填充值只作完整接收的辅助线索。 */
+static void inspect_capture(const uint32_t *samples)
 {
     unsigned fill_words = 0;
     for (unsigned index = 0; index < AUDIO_FRAMES * AUDIO_CHANNELS; ++index)
     {
-        if ((uint16_t)samples[index] == AUDIO_CAPTURE_FILL_WORD)
+        if (samples[index] == AUDIO_CAPTURE_FILL_WORD)
         {
             ++fill_words;
         }
     }
-    rt_kprintf("MIC buffer fill_A5A5=%u/%u (large count suggests incomplete reception)\n",
+    rt_kprintf("MIC buffer fill_A5A5A5A5=%u/%u (large count suggests incomplete reception)\n",
                fill_words, AUDIO_FRAMES * AUDIO_CHANNELS);
-    print_pcm_statistics("RAW-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
-    print_pcm_statistics("RAW-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
+    print_pcm24_statistics("RAW-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
+    print_pcm24_statistics("RAW-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
     for (unsigned part = 0; part < 4; ++part)
     {
         unsigned first = part * (AUDIO_FRAMES / 4u);
-        rt_kprintf("MIC window=%u frames=%u..%u (~256ms)\n",
+        rt_kprintf("MIC window=%u frames=%u..%u (~128ms)\n",
                    part, first, first + AUDIO_FRAMES / 4u - 1u);
-        print_pcm_statistics("WIN-L", samples + first * AUDIO_CHANNELS,
-                             AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
-        print_pcm_statistics("WIN-R", samples + first * AUDIO_CHANNELS + 1u,
-                             AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
+        print_pcm24_statistics("WIN-L", samples + first * AUDIO_CHANNELS,
+                               AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
+        print_pcm24_statistics("WIN-R", samples + first * AUDIO_CHANNELS + 1u,
+                               AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
         for (unsigned offset = 0; offset < 3; ++offset)
         {
             unsigned index = (first + offset) * AUDIO_CHANNELS;
-            rt_kprintf("MIC raw frame=%u L=%04X/%d R=%04X/%d\n", first + offset,
-                       (unsigned)(uint16_t)samples[index], samples[index],
-                       (unsigned)(uint16_t)samples[index + 1u], samples[index + 1u]);
+            int left = pcm24_signed(samples[index]);
+            int right = pcm24_signed(samples[index + 1u]);
+            rt_kprintf("MIC raw frame=%u L=%08X/%d R=%08X/%d\n", first + offset,
+                       (unsigned)samples[index], left, (unsigned)samples[index + 1u], right);
+            rt_kprintf("MIC PCM16 frame=%u L=%d R=%d (signed24 / 256)\n",
+                       first + offset, left / 256, right / 256);
         }
     }
+}
+
+/* 原地把 24 位双声道转为 16 位单声道；先读当前字，再写前面的 PCM16。
+ * memcpy 避免同一 RAM 的 uint32_t/int16_t 类型别名问题；写入不会覆盖后续帧。
+ * 除以 256 丢弃最低 8 位，整数除法向零取整；增益仍由 prepare_playback 处理。 */
+static void convert_left_pcm24(void *buffer)
+{
+    uint8_t *bytes = buffer;
+    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
+    {
+        uint32_t word;
+        memcpy(&word, bytes + index * AUDIO_CHANNELS * sizeof(uint32_t), sizeof(word));
+        int16_t sample = (int16_t)(pcm24_signed(word) / 256);
+        memcpy(bytes + index * sizeof(int16_t), &sample, sizeof(sample));
+    }
+    print_pcm_statistics("CONVERTED-L", (const int16_t *)buffer, AUDIO_FRAMES, 1);
 }
 
 /* 等待可被停止事件打断，倒计时和试听间隔都不会阻塞退出数秒。 */
@@ -315,7 +411,7 @@ static int wait_capture_idle(void)
 /* 预热和正式录音共用一次接收过程；调用者保持 SSI/GPT1 打开。
  * 每次重填缓冲、清零诊断状态，完成回调立即 Stop；错误/超时由线程 Stop。
  * 接收停止后才打印详细状态，避免日志耗时人为制造 FIFO 溢出。 */
-static int capture_block(const char *label, int16_t *samples, const i2s_cfg_t *config)
+static int capture_block(const char *label, uint32_t *samples, const i2s_cfg_t *config)
 {
     int result = -RT_ERROR;
     fsp_err_t error;
@@ -416,7 +512,7 @@ static int capture_block(const char *label, int16_t *samples, const i2s_cfg_t *c
 /* 先接收并丢弃启动段，再保持时钟倒计时，正式采集一个新缓冲。
  * WS_CONTINUE_ON 保持空闲期间的 BCLK/LRCLK，避免倒计时后重新启动麦克风。
  * 两段接收共用 65536 字节 RAM；始终先关闭 SSI/DTC，再关闭 GPT1 时钟。 */
-static int capture_audio(int16_t *samples)
+static int capture_audio(uint32_t *samples)
 {
     i2s_cfg_t microphone_config = g_i2s0_cfg;
     timer_cfg_t audio_clock_config = g_timer_cfg;
@@ -426,9 +522,9 @@ static int capture_audio(int16_t *samples)
     audio_clock_config.period_counts = 117;
     audio_clock_config.duty_cycle_counts = 58;
     audio_clock_config.source_div = TIMER_SOURCE_DIV_1;
-    /* SSI 取 32 位时隙中的最高 16 位；FIFO/DTC 每次访问 2 字节。
-     * 本轮只对照启动行为，不同时修改采集格式和回放增益。 */
-    microphone_config.pcm_width = I2S_PCM_WIDTH_16_BITS;
+    /* 与工程原始 audio-mic 一致：24 位右对齐，FIFO/DTC 每次访问 4 字节。
+     * 每帧 8 字节，65536 字节缓冲录 8192 帧约半秒；保留连续时钟预热。 */
+    microphone_config.pcm_width = I2S_PCM_WIDTH_24_BITS;
     microphone_config.word_length = I2S_WORD_LENGTH_32_BITS;
     microphone_config.ws_continue = I2S_WS_CONTINUE_ON;
     microphone_config.p_callback = mic_callback;
@@ -443,7 +539,7 @@ static int capture_audio(int16_t *samples)
                (unsigned)R_PFS->PORT[4].PIN[3].PmnPFS,
                (unsigned)R_PFS->PORT[4].PIN[4].PmnPFS,
                (unsigned)R_PFS->PORT[4].PIN[6].PmnPFS);
-    rt_kprintf("MIC config: PCM=16 slot=32 channels=2 bytes=%u expected=1022ms\n",
+    rt_kprintf("MIC config: PCM=24 slot=32 channels=2 bytes=%u expected=511ms\n",
                (unsigned)AUDIO_CAPTURE_BYTES);
     rt_kprintf("MIC clocks: PCLKD=%u GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz\n",
                R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD));
@@ -484,8 +580,8 @@ static int capture_audio(int16_t *samples)
     {
         goto microphone_close;
     }
-    print_pcm_statistics("WARMUP-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
-    print_pcm_statistics("WARMUP-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
+    print_pcm24_statistics("WARMUP-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
+    print_pcm24_statistics("WARMUP-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
     rt_kprintf("MIC countdown: SSI stays open, SSIOFR=%08X LRCONT=%u\n",
                (unsigned)R_SSI0->SSIOFR, (unsigned)((R_SSI0->SSIOFR >> 8u) & 1u));
     for (unsigned seconds = 3; seconds > 0; --seconds)
@@ -497,7 +593,7 @@ static int capture_audio(int16_t *samples)
             goto microphone_close;
         }
     }
-    rt_kprintf("MIC RECORD NOW: keep quiet OR sustain AH for this entire 1 second\n");
+    rt_kprintf("MIC RECORD NOW: keep quiet OR sustain AH for this entire half second\n");
     result = capture_block("RECORD", samples, &microphone_config);
 microphone_close:
     error = R_SSI_Close(&g_i2s0_ctrl);
@@ -515,8 +611,7 @@ timer_close:
     return result;
 }
 
-/* 原地把 L,R,L,R 双声道压成 L,L 单声道。
- * 写入位置总在当前读取位置之前，不会覆盖尚未读取的左声道数据。 */
+/* 输入已为 PCM16 左声道；只统计并执行原来的去直流、有限增益与淡入淡出。 */
 static int prepare_playback(int16_t *samples)
 {
     int64_t sum = 0;
@@ -526,12 +621,11 @@ static int prepare_playback(int16_t *samples)
     unsigned capture_clipped = 0;
     for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
     {
-        int sample = samples[index * AUDIO_CHANNELS];
+        int sample = samples[index];
         if (index > 0 && sample != samples[index - 1])
         {
             ++changed;
         }
-        samples[index] = (int16_t)sample;
         sum += sample;
         if (sample < minimum)
         {
@@ -552,9 +646,9 @@ static int prepare_playback(int16_t *samples)
     {
         peak = mean - minimum;
     }
-    rt_kprintf("MIC DMA complete: frames=%u min=%d max=%d mean=%d ac_peak=%d\n",
+    rt_kprintf("MIC PCM16 input: frames=%u min=%d max=%d mean=%d ac_peak=%d\n",
                AUDIO_FRAMES, minimum, maximum, mean, peak);
-    rt_kprintf("MIC DMA complete: changed=%u clipped=%u\n", changed, capture_clipped);
+    rt_kprintf("MIC PCM16 input: changed=%u clipped=%u\n", changed, capture_clipped);
     if (peak == 0 || changed == 0)
     {
         rt_kprintf("MIC no changing audio; check microphone capture\n");
@@ -818,11 +912,13 @@ static int run_test(void)
                    (unsigned)(AUDIO_CAPTURE_BYTES + 2u * sizeof(uint32_t)));
         return -RT_ENOMEM;
     }
-    int16_t *samples = (int16_t *)(allocation + 1);
+    uint32_t *raw_samples = allocation + 1;
+    int16_t *samples = (int16_t *)raw_samples;
+    memset(raw_samples, AUDIO_BUFFER_FILL_BYTE, AUDIO_CAPTURE_BYTES);
     uint32_t *tail_guard = (uint32_t *)((uint8_t *)samples + AUDIO_CAPTURE_BYTES);
     allocation[0] = AUDIO_BUFFER_GUARD;
     *tail_guard = AUDIO_BUFFER_GUARD;
-    rt_kprintf("REPLAY diagnostic v2: REF -> WARMUP -> countdown -> RECORD -> REPLAY -> REF\n");
+    rt_kprintf("REPLAY diagnostic v3 PCM24: REF -> WARMUP -> countdown -> RECORD -> REPLAY -> REF\n");
     rt_kprintf("REPLAY stage 1: reference beep BEFORE; remember whether you hear it\n");
     result = play_reference(samples, "REF-BEFORE");
     if (result != TEST_WAIT)
@@ -830,7 +926,7 @@ static int run_test(void)
         goto done;
     }
     rt_kprintf("REPLAY stage 2: warmup then countdown; keep quiet until recording cue\n");
-    result = capture_audio(samples);
+    result = capture_audio(raw_samples);
     if (allocation[0] != AUDIO_BUFFER_GUARD || *tail_guard != AUDIO_BUFFER_GUARD)
     {
         rt_kprintf("MIC buffer guard CORRUPTED; aborting before PCM conversion\n");
@@ -840,11 +936,12 @@ static int run_test(void)
     rt_kprintf("MIC buffer guards MATCH\n");
     if (result != TEST_PASS)
     {
-        inspect_capture(samples);
+        inspect_capture(raw_samples);
         goto done;
     }
     rt_kprintf("MIC recording finished; stop speaking. REPLAY stage 3: inspect L/R and prepare\n");
-    inspect_capture(samples);
+    inspect_capture(raw_samples);
+    convert_left_pcm24(raw_samples);
     result = prepare_playback(samples);
     if (result != TEST_PASS)
     {
