@@ -90,10 +90,64 @@ python scripts/audio_record_to_mp3.py --log recording.txt --output logs/mic-offl
 
 9组真实C函数ARM模拟检查通过：24位符号、CRC已知向量、完整预热/录音帧数、全部40064个PCM16对独立卷积参考、WAV导出字节/偏移、关闭硬件后导出、动态申请与哨兵、取消/超时/队列溢出/启动和读错误、IPC/优先级恢复、低通直流增益与高频抑制。FSP桩不模拟麦克风的声学响应。
 
-10项主机检查通过，包括协议损坏拒绝、PCM/WAV完整字节、试听转换、有限采集/异常释放、拒绝覆盖旧录音，以及真实FFmpeg编码/解码：合成1kHz音调的幅度和时长保留。合成输入只验证工具，不能代替真实麦克风录音。另有17项总入口/独立性工具检查通过，当前共48个独立测试文件。
+12项主机检查通过，包括协议损坏拒绝、PCM/WAV完整字节、试听转换、有限采集/异常释放、拒绝覆盖旧录音，以及真实FFmpeg编码/解码：合成1kHz音调的幅度和时长保留。合成输入只验证工具，不能代替真实麦克风录音。另有17项总入口/独立性工具检查通过，当前共48个独立测试文件。
 
 Studio构建0 errors/0 warnings，Flash1168016字节、静态RAM543528字节。DAP-LINK/PyOCD烧录成功、退出码0。原始证据保存在本机`logs/audio-record-arm.log`、`logs/audio-record-host-tests.log`、`logs/audio-record-independent-tests.log`、`logs/audio-record-build.log`和`logs/audio-record-flash.log`；合成转换产物为`logs/audio-record-synthetic.*`，不能当成实物录音。
 
 另用SWD在真实Cortex-M4执行32块实际处理函数，最大270984周期、2258.2µs，平均2257.1µs（120MHz），输入块间隔约7987µs。该基准暂时运行SRAM程序，完成后复位回已烧录的Flash固件；不打开COM8，也不代表实际麦克风采集通过。结果见`logs/audio-record-benchmark.log`。
 
 实际声音是否正常仍待用户按上述顺序录音试听；板端最终`WAIT`表示导出完成、等待声学确认，不自动宣布麦克风通过。
+
+## 首轮实物录音与串口重试修复（2026-10-07）
+
+用户先运行mic-record-01，COM8被其他终端占用，Windows返回WinError 5；未发出录音命令。旧脚本先创建日志再开串口，留下了0字节日志，同编号重试被防覆盖检查拒绝。已改成先打开串口、再独占创建日志：拒绝访问不会留下空文件，正常释放后可用原编号重试。已核对并清理该次失败的0字节mic-record-01.serial.txt；其他录音保留。新增两项检查覆盖拒绝访问后同名前缀重试，以及日志创建冲突时保留旧内容并释放串口，共12项主机检查通过。此修复仅修改电脑脚本，不改固件、不重新烧录、不打开COM8。
+
+随后用户用mic-record-02完成实际采集。重新解析完整2504行数据并通过CRC=8B437AD7，原始WAV的80128字节与导出逐字节一致，试听WAV也与脚本的去均值/固定增益结果逐字节一致。MIC采集288384/288384帧、751/751块，5998ms；保存40064/40064 PCM16样本，约4.999875秒。read/overrun/early_idle/stop全0，storage_clipped=0；处理最大1512µs、平均1442µs、就绪等待最大33µs，队列峰值1/2，29659ms后WAIT/IDLE。COM8由用户运行的脚本正常释放。
+
+PCM16最小值-933、最大值339、均值-80.452、交流RMS169.229；试听固定增益14.0755倍。文件mic-record-02.wav/.listen.wav/.raw.mp3/.mp3/.json和完整串口日志均保存在本机logs。这里的计数和幅度只证明接收、保存、导出和转换完成；是否持续发声、MP3能否听清人声仍等待用户反馈，未宣布麦克风声学验收通过。
+
+以下原始控制日志只省略2504行十六进制DATA；完整文件为logs/mic-record-02.serial.txt。
+
+```text
+msh >hmi_test status
+TEST STATUS ready=1 busy=0
+msh >hmi_test audio-record
+TEST BEGIN audio-record
+msh >MICREC v1: warmup 1s + record 5s -> print PCM16, no speaker playback
+MICREC LPF 3kHz -> decimate 6 -> divide 32 -> PCM16; no automatic gain
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC BCLK=3076923 Hz rate~48077; GPT1 period=39 (original BSP clock)
+MIC PCM24 slot32: source_frames=288384; warmup_frames=48000; PCM16_frames=40064
+MIC queue: buffers=2 block_period_us=7987 capture_priority=14
+MIC RECORD NOW: 6 seconds; first 1s warmup, then save 5s; keep speaking
+MIC RECORD DONE: frames=288384/288384 blocks=751/751 elapsed=5998 ms
+MIC errors: read=0 overrun=0 early_idle=0 stop=0 idle=1 result=0
+MIC timing: process_max_us=1512 avg_us=1442 ready_wait_max_us=33
+MIC queue peak=1/2 (includes processing block)
+MIC INPUT second=1 n=48077 min=-30420 max=4658 mean=-8648
+MIC INPUT second=1 R24_peak=0 L_upper_nonzero=0
+MIC INPUT second=2 n=48077 min=-11790 max=11235 mean=-2501
+MIC INPUT second=2 R24_peak=0 L_upper_nonzero=0
+MIC INPUT second=3 n=48077 min=-12118 max=8630 mean=-436
+MIC INPUT second=3 R24_peak=0 L_upper_nonzero=0
+MIC INPUT second=4 n=48077 min=-9531 max=7371 mean=-1184
+MIC INPUT second=4 R24_peak=0 L_upper_nonzero=0
+MIC INPUT second=5 n=48076 min=-8632 max=11856 mean=-98
+MIC INPUT second=5 R24_peak=0 L_upper_nonzero=0
+MIC INPUT preview=0 L32=00FF90A5 R32=00000000 L24=-28507
+MIC INPUT preview=1 L32=00FF91F2 R32=00000000 L24=-28174
+MIC INPUT preview=2 L32=00FF91A6 R32=00000000 L24=-28250
+MIC INPUT preview=3 L32=00FF9111 R32=00000000 L24=-28399
+MIC INPUT preview=4 L32=00FF94F4 R32=00000000 L24=-27404
+MIC INPUT preview=5 L32=00FF92B7 R32=00000000 L24=-27977
+MIC INPUT preview=6 L32=00FF90C2 R32=00000000 L24=-28478
+MIC INPUT preview=7 L32=00FF92C0 R32=00000000 L24=-27968
+MICREC exporting after SSI/GPT closed; wait about 21s at 115200 baud
+MICREC PCM16 samples=40064/40064 bytes=80128 storage_clipped=0
+MICREC BEGIN v=1 rate=8013 frames=40064 bits=16 channels=1 bytes=80128 crc32=8B437AD7
+MICREC END bytes=80128 crc32=8B437AD7
+TEST RESULT audio-record WAIT code=1 elapsed=29659 ms
+TEST IDLE
+```

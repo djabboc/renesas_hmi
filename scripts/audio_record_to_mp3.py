@@ -151,7 +151,9 @@ def capture_log(port: str, path: Path, timeout: float = 90) -> str:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     chunks = []
-    with path.open("wb") as log, SerialPort(port) as serial:
+    # 先打开串口；拒绝访问时不创建空日志，原编号可直接重试。
+    # 再以独占创建方式打开日志，防止检查后出现同名文件时覆盖旧记录。
+    with SerialPort(port) as serial, path.open("xb") as log:
         def record(data: bytes) -> str:
             log.write(data)
             log.flush()

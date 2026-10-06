@@ -113,6 +113,33 @@ class RecordToolsTests(unittest.TestCase):
                 self.assertTrue(port.closed)
                 self.assertEqual(port.writes[-1], b"hmi_test stop\r")
 
+    def test_denied_serial_open_leaves_no_log_and_same_prefix_can_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "recording.txt"
+            with patch("serial_test_port.SerialPort") as factory:
+                factory.return_value.__enter__.side_effect = PermissionError("COM8 occupied")
+                with self.assertRaises(PermissionError):
+                    tool.capture_log("COM8", log)
+                self.assertFalse(log.exists())
+            text = make_export()[0] + "\nTEST RESULT audio-record WAIT code=1\nTEST IDLE\n"
+            port = FakePort([b"TEST STATUS ready=1 busy=0\n", text.encode()])
+            with patch("serial_test_port.SerialPort", return_value=port), redirect_stdout(io.StringIO()):
+                captured = tool.capture_log("COM8", log)
+            self.assertTrue(port.closed)
+            self.assertEqual(tool.parse_recording(captured).frames, 40064)
+
+    def test_log_creation_race_preserves_old_log_and_closes_serial(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "recording.txt"
+            log.write_bytes(b"previous recording")
+            port = FakePort([])
+            with patch("serial_test_port.SerialPort", return_value=port):
+                with self.assertRaises(FileExistsError):
+                    tool.capture_log("COM8", log)
+            self.assertTrue(port.closed)
+            self.assertEqual(log.read_bytes(), b"previous recording")
+            self.assertEqual(port.writes, [])
+
     def test_existing_prefix_refused_before_serial_open(self):
         with tempfile.TemporaryDirectory() as temporary:
             prefix = Path(temporary) / "voice"
