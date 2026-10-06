@@ -52,6 +52,13 @@ STUB = r'''#include <stdint.h>
 #define BSP_IO_PORT_07_PIN_03 0x703
 #define I2S_EVENT_RX_FULL 2
 #define I2S_EVENT_IDLE 0
+#define I2S_PCM_WIDTH_16_BITS 16
+#define I2S_WORD_LENGTH_32_BITS 32
+#define I2S_WS_CONTINUE_ON 0
+#define BSP_IO_PORT_04_PIN_03 0x403
+#define BSP_IO_PORT_04_PIN_04 0x404
+#define BSP_IO_PORT_04_PIN_06 0x406
+#define FSP_PRIV_CLOCK_PCLKD 0
 typedef int fsp_err_t;
 typedef unsigned rt_tick_t;
 typedef struct { int unused; } timer_callback_args_t;
@@ -62,6 +69,38 @@ typedef struct
     unsigned source_div, mode, period_counts, duty_cycle_counts;
     void (*p_callback)(timer_callback_args_t *);
 } timer_cfg_t;
+typedef struct { unsigned block_count_remaining, transfer_length_remaining; } transfer_properties_t;
+typedef struct { unsigned size, length; const void *p_src; } transfer_info_t;
+typedef struct { const transfer_info_t *p_info; } transfer_cfg_t;
+typedef struct { int (*infoGet)(void *, transfer_properties_t *); } transfer_api_t;
+typedef struct { const transfer_cfg_t *p_cfg; const transfer_api_t *p_api; void *p_ctrl; } transfer_instance_t;
+typedef struct
+{
+    unsigned pcm_width, word_length, ws_continue;
+    int rxi_irq;
+    void (*p_callback)(i2s_callback_args_t *);
+    const transfer_instance_t *p_transfer_rx;
+} i2s_cfg_t;
+typedef struct { unsigned rx_dest_samples, fifo_access_size, open; } ssi_instance_ctrl_t;
+static struct { unsigned SSICR, SSISR, SSIFSR, SSIFCR, SSIOFR; } mock_ssi;
+#define R_SSI0 (&mock_ssi)
+static struct { struct { struct { unsigned PmnPFS; } PIN[16]; } PORT[8]; } mock_pfs;
+#define R_PFS (&mock_pfs)
+static ssi_instance_ctrl_t g_i2s0_ctrl;
+static i2s_cfg_t g_i2s0_cfg;
+static gpt_instance_ctrl_t g_timer_ctrl;
+static timer_cfg_t g_timer_cfg;
+static volatile fsp_err_t capture_stop_error;
+static volatile rt_tick_t capture_finished_at;
+static volatile unsigned capture_end_ssicr, capture_end_ssisr, capture_end_ssifsr, capture_end_cpu_words;
+static unsigned ssi_reads, ssi_stops, ssi_closes, ssi_active, ssi_started, ssi_pending_idle;
+static unsigned ssi_freeze, ssi_no_idle, ssi_early_idle, ssi_read_fail, ssi_open_fail, ssi_stop_fail;
+static unsigned continuous_seen;
+static int16_t *ssi_buffer;
+static void (*ssi_callback)(i2s_callback_args_t *);
+static int R_SSI_Stop(ssi_instance_ctrl_t *ctrl);
+static void mock_capture_step(void);
+static unsigned R_FSP_SystemClockHzGet(unsigned clock) { return 120000000; }
 static unsigned clock_ms, stop_at, duties[2], duty_calls;
 static int force_pwm_error;
 static gpt_instance_ctrl_t g_timer6_ctrl, g_timer2_ctrl;
@@ -82,6 +121,7 @@ static int test_elapsed(rt_tick_t start, unsigned ms) { return clock_ms - start 
 static void rt_thread_mdelay(unsigned ms)
 {
     clock_ms += ms;
+    mock_capture_step();
     if (sample_callback && !freeze_samples)
     {
         for (unsigned index = 0; index < ms * 16; ++index) { sample_callback(NULL); }
@@ -102,7 +142,7 @@ static fsp_err_t R_GPT_DutyCycleSet(void *timer, unsigned duty, unsigned pin)
     ++duty_calls;
     return force_pwm_error;
 }
-static int configure_pwm_pin(unsigned pin) { return TEST_PASS; }
+static int configure_audio_pin(unsigned pin) { return TEST_PASS; }
 static int mute_output_pins(void) { ++mute_calls; return TEST_PASS; }
 static int R_GPT_Open(gpt_instance_ctrl_t *ctrl, const timer_cfg_t *cfg)
 {
@@ -131,12 +171,73 @@ static int R_GPT_Close(gpt_instance_ctrl_t *ctrl)
     ++close_calls;
     return FSP_SUCCESS;
 }
+static int R_SSI_Open(ssi_instance_ctrl_t *ctrl, const i2s_cfg_t *cfg)
+{
+    if (ssi_open_fail) { return 7; }
+    ctrl->open = 1; ctrl->fifo_access_size = 1; ssi_callback = cfg->p_callback;
+    mock_ssi.SSIOFR = 0;
+    if (cfg->ws_continue == I2S_WS_CONTINUE_ON) { mock_ssi.SSIOFR = 0x100; }
+    return FSP_SUCCESS;
+}
+static int R_SSI_Read(ssi_instance_ctrl_t *ctrl, void *buffer, unsigned bytes)
+{
+    ++ssi_reads;
+    if (ssi_reads == 2 && (mock_ssi.SSIOFR & 0x100) && ctrl->open) { continuous_seen = 1; }
+    if (ssi_read_fail == ssi_reads) { return 7; }
+    ssi_buffer = buffer; ssi_active = 1; ssi_started = clock_ms;
+    return FSP_SUCCESS;
+}
+static int R_SSI_Stop(ssi_instance_ctrl_t *ctrl)
+{
+    ++ssi_stops; ssi_active = 0; ctrl->rx_dest_samples = 0;
+    if (ssi_stop_fail) { return 7; }
+    ssi_pending_idle = 1;
+    return FSP_SUCCESS;
+}
+static int R_SSI_Close(ssi_instance_ctrl_t *ctrl)
+{
+    if (!ctrl->open) { return 7; }
+    ctrl->open = 0; ++ssi_closes; ssi_active = 0; ssi_pending_idle = 0;
+    ssi_callback = NULL; mock_ssi.SSIOFR = 0;
+    return FSP_SUCCESS;
+}
+static void mock_capture_step(void)
+{
+    if (!ssi_callback) { return; }
+    i2s_callback_args_t args = {I2S_EVENT_IDLE};
+    if (ssi_pending_idle && !ssi_no_idle)
+    {
+        ssi_pending_idle = 0; ssi_callback(&args);
+    }
+    if (ssi_active && ssi_early_idle)
+    {
+        ssi_active = 0; ssi_callback(&args); return;
+    }
+    if (ssi_active && !ssi_freeze && clock_ms - ssi_started >= 1023)
+    {
+        for (unsigned index = 0; index < 32768; ++index)
+        {
+            ssi_buffer[index] = 0;
+            if (index % 2 == 0) { ssi_buffer[index] = 1000; }
+        }
+        args.event = I2S_EVENT_RX_FULL; ssi_callback(&args);
+    }
+}
+
 '''
 
 HARNESS = r'''
 unsigned test_error, tests_passed;
 static struct { uint32_t before; int16_t samples[AUDIO_FRAMES * 2]; uint32_t after; } guarded;
 #define CHECK(condition) do { if (!(condition)) { test_error = __LINE__; return; } } while (0)
+static void reset_capture(void)
+{
+    clock_ms = 0; stop_at = 0; operation = 0; failed_operation = 0;
+    open_calls = 0; close_calls = 0;
+    ssi_reads = 0; ssi_stops = 0; ssi_closes = 0; ssi_active = 0; ssi_pending_idle = 0;
+    ssi_freeze = 0; ssi_no_idle = 0; ssi_early_idle = 0; ssi_read_fail = 0;
+    ssi_open_fail = 0; ssi_stop_fail = 0; continuous_seen = 0; ssi_callback = NULL;
+}
 static void reset_playback(void)
 {
     clock_ms = 0; stop_at = 0; duties[0] = 0; duties[1] = 0; duty_calls = 0;
@@ -240,6 +341,9 @@ void validate(void)
     event.event = I2S_EVENT_IDLE;
     mic_callback(&event);
     CHECK(capture_complete == 1 && capture_rx_events == 1 && capture_early_idle == 0);
+    CHECK(capture_active == 0 && ssi_stops == 1 && capture_stop_error == FSP_SUCCESS);
+    event.event = I2S_EVENT_RX_FULL; mic_callback(&event);
+    CHECK(ssi_stops == 1); /* 重复 RX 通知不能重复 Stop。 */
     ++tests_passed;
 
     reset_playback();
@@ -271,6 +375,52 @@ void validate(void)
         CHECK(mute_calls == 1);
     }
     ++tests_passed;
+    reset_capture();
+    CHECK(capture_audio(samples) == TEST_PASS);
+    CHECK(ssi_reads == 2 && ssi_stops == 2 && ssi_closes == 1 && continuous_seen == 1);
+    CHECK(clock_ms >= 5046 && clock_ms < 5100 && capture_rx_events == 1);
+    CHECK(samples[0] == 1000 && samples[1] == 0);
+    CHECK(!g_i2s0_ctrl.open && !g_timer_ctrl.open && !ssi_active);
+    CHECK(guarded.before == 0x12345678 && guarded.after == 0x87654321);
+    ++tests_passed;
+
+    const unsigned cancel_times[] = {3, 2000, 4100};
+    for (unsigned index = 0; index < 3; ++index)
+    {
+        reset_capture(); stop_at = cancel_times[index];
+        CHECK(capture_audio(samples) == -RT_EINTR);
+        CHECK(ssi_closes == 1 && !g_i2s0_ctrl.open && !g_timer_ctrl.open && !ssi_active);
+        CHECK(open_calls == close_calls);
+    }
+    ++tests_passed;
+
+    reset_capture(); ssi_freeze = 1;
+    CHECK(capture_audio(samples) == -RT_ETIMEOUT && clock_ms < 2050);
+    CHECK(ssi_stops == 1 && ssi_closes == 1 && !ssi_active && open_calls == close_calls);
+    reset_capture(); ssi_early_idle = 1;
+    CHECK(capture_audio(samples) == -RT_ERROR);
+    CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
+    ++tests_passed;
+
+    for (unsigned failure = 1; failure <= 2; ++failure)
+    {
+        reset_capture(); ssi_read_fail = failure;
+        CHECK(capture_audio(samples) == -RT_ERROR);
+        CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
+        reset_capture(); failed_operation = failure;
+        CHECK(capture_audio(samples) == -RT_ERROR);
+        CHECK(!g_timer_ctrl.open && !g_i2s0_ctrl.open && open_calls == close_calls);
+    }
+    reset_capture(); ssi_open_fail = 1;
+    CHECK(capture_audio(samples) == -RT_ERROR && ssi_closes == 0 && open_calls == close_calls);
+    ++tests_passed;
+
+    reset_capture(); ssi_stop_fail = 1;
+    CHECK(capture_audio(samples) == -RT_ERROR && ssi_closes == 1 && !ssi_active);
+    reset_capture(); ssi_no_idle = 1;
+    CHECK(capture_audio(samples) == -RT_ETIMEOUT && clock_ms < 1100);
+    CHECK(ssi_closes == 1 && !ssi_active && open_calls == close_calls);
+    ++tests_passed;
     CHECK(max_log_bytes < 126);
     ++tests_passed;
 }
@@ -292,7 +442,8 @@ def main() -> int:
     statistics_type = re.search(r"struct pcm_statistics\s*\{.*?\};", source, re.S).group(0)
     functions = "\n".join(extract_function(source, name)
                           for name in ("measure_pcm", "print_pcm_statistics", "wait_ms", "mic_callback",
-                                       "prepare_playback", "audio_tick", "close_timer", "play_audio", "play_reference"))
+                                       "close_timer", "wait_capture_idle", "capture_block", "capture_audio",
+                                       "prepare_playback", "audio_tick", "play_audio", "play_reference"))
     output = ROOT / "logs/audio-validation"
     output.mkdir(parents=True, exist_ok=True)
     harness = output / "harness.c"
@@ -317,9 +468,9 @@ def main() -> int:
     machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=30000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 12:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/12")
-    print("PASS: 12 ARM groups; PCM/DC/gain/PWM, channel stats, SSI callback, reference/EOF, errors/cleanup, log length")
+    if error or passed != 17:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/17")
+    print("PASS: 17 ARM groups; warmup/record lifecycle, cancellation/timeouts/startup cleanup; PCM/DC/gain/PWM, channel stats, SSI callback, reference/EOF, errors/cleanup, log length")
     return 0
 
 

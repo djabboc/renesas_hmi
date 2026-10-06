@@ -3,7 +3,7 @@
  * @file test-audio-replay.c
  * @brief 独立完成麦克风录音和扬声器回放。
  *
- * 先播放参考音，倒计时 3 秒后录音约 1 秒，再回放和重播参考音。
+ * 先播放参考音，再预热 SSI 麦克风时钟，倒计时后录音、回放和重播参考音。
  * SSI 采集 16 位双声道，在同一缓冲内提取左声道、去直流并有限调整幅度。
  * 先停 DMA/定时器再释放缓冲，硬件完成仍需结合人工试听。
  * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
@@ -40,8 +40,8 @@ static int test_elapsed(rt_tick_t start, unsigned milliseconds)
     return (rt_tick_t)(rt_tick_get() - start) >= rt_tick_from_millisecond(milliseconds);
 }
 
-/* 只恢复本例使用的两个 PWM 引脚，避免重新配置整张 IOPORT 引脚表。 */
-static int configure_pwm_pin(bsp_io_port_pin_t pin)
+/* 只恢复指定音频引脚的复用，避免重新配置整张 IOPORT 引脚表。 */
+static int configure_audio_pin(bsp_io_port_pin_t pin)
 {
     for (unsigned index = 0; index < g_bsp_pin_cfg.number_of_pins; ++index)
     {
@@ -98,6 +98,12 @@ static volatile unsigned capture_active;
 static volatile unsigned capture_rx_events;
 static volatile unsigned capture_idle_events;
 static volatile unsigned capture_early_idle;
+static volatile fsp_err_t capture_stop_error;
+static volatile rt_tick_t capture_finished_at;
+static volatile unsigned capture_end_ssicr;
+static volatile unsigned capture_end_ssisr;
+static volatile unsigned capture_end_ssifsr;
+static volatile unsigned capture_end_cpu_words;
 static volatile unsigned playback_position;
 static const int16_t *playback_samples;
 static unsigned playback_frame_count;
@@ -238,13 +244,26 @@ static int wait_ms(unsigned milliseconds)
     return TEST_PASS;
 }
 
-/* SSI 中断确认 DMA 接收完成；不在中断中处理音频数据。 */
+/* 最后一帧已进入 RAM 后，立即停止 REN/DTC，避免等待线程期间再次触发 RX。
+ * WS_CONTINUE 保持 BCLK/LRCLK，停止接收不会让麦克风重新进入无时钟状态。
+ * Stop 只操作寄存器和 DTC，不分配内存或打印；关闭 SSI 留给线程完成。 */
 static void mic_callback(i2s_callback_args_t *arguments)
 {
     if (arguments->event == I2S_EVENT_RX_FULL)
     {
         ++capture_rx_events;
-        capture_complete = 1;
+        if (capture_active && !capture_complete)
+        {
+            capture_finished_at = rt_tick_get();
+            capture_end_ssicr = R_SSI0->SSICR;
+            capture_end_ssisr = R_SSI0->SSISR;
+            capture_end_ssifsr = R_SSI0->SSIFSR;
+            capture_end_cpu_words = g_i2s0_ctrl.rx_dest_samples;
+            /* 先取消采集活动标记，之后的正常 IDLE 不会被误判为提前退出。 */
+            capture_active = 0;
+            capture_stop_error = R_SSI_Stop(&g_i2s0_ctrl);
+            capture_complete = 1;
+        }
     }
     else if (arguments->event == I2S_EVENT_IDLE)
     {
@@ -275,64 +294,48 @@ static int close_timer(const char *label, gpt_instance_ctrl_t *control)
     return result;
 }
 
-/* 启动音频时钟和 SSI 采集；完成或超时后停止接收并关闭硬件。 */
-static int capture_audio(int16_t *samples)
+/* SSI Stop 在当前帧结束后产生 IDLE；等到这个事件再重启接收或关闭。
+ * 回调记录 IDLE，因此不依赖可能已被驱动清除的 SSISR.IIRQ 标志。
+ * 清理等待不响应取消，保证取消请求不会跳过硬件停止过程。 */
+static int wait_capture_idle(void)
 {
-    i2s_cfg_t microphone_config = g_i2s0_cfg;
-    timer_cfg_t audio_clock_config = g_timer_cfg;
+    rt_tick_t start = rt_tick_get();
+    while (capture_idle_events == 0 && !test_elapsed(start, 20))
+    {
+        rt_thread_mdelay(1);
+    }
+    if (capture_idle_events == 0)
+    {
+        rt_kprintf("MIC idle timeout after stop; SSI will be closed\n");
+        return -RT_ETIMEOUT;
+    }
+    return TEST_PASS;
+}
+
+/* 预热和正式录音共用一次接收过程；调用者保持 SSI/GPT1 打开。
+ * 每次重填缓冲、清零诊断状态，完成回调立即 Stop；错误/超时由线程 Stop。
+ * 接收停止后才打印详细状态，避免日志耗时人为制造 FIFO 溢出。 */
+static int capture_block(const char *label, int16_t *samples, const i2s_cfg_t *config)
+{
     int result = -RT_ERROR;
     fsp_err_t error;
-    rt_tick_t start = rt_tick_get();
-    /* GPT1A 内部供 SSI 时钟：120MHz / 117 / 64 = 16025.64 双声道帧/秒。 */
-    audio_clock_config.period_counts = 117;
-    audio_clock_config.duty_cycle_counts = 58;
-    /* 麦克风每个 32 位时隙发送 24 位数据；SSI 取最高 16 位。
-     * 时隙仍为 32 位，双声道帧率不变；16 位 FIFO/DTC 访问使每帧占 4 字节。
-     * 16384 帧仍只分配 65536 字节，录音时长从半秒增加到约 1.02 秒。 */
-    microphone_config.pcm_width = I2S_PCM_WIDTH_16_BITS;
-    microphone_config.word_length = I2S_WORD_LENGTH_32_BITS;
-    microphone_config.p_callback = mic_callback;
+    if (test_cancelled())
+    {
+        return -RT_EINTR;
+    }
     memset(samples, AUDIO_BUFFER_FILL_BYTE, AUDIO_CAPTURE_BYTES);
     capture_complete = 0;
     capture_active = 0;
     capture_rx_events = 0;
     capture_idle_events = 0;
     capture_early_idle = 0;
-    rt_kprintf("MIC config: PCM=16 slot=32 channels=2 bytes=%u expected=1022ms\n",
-               (unsigned)AUDIO_CAPTURE_BYTES);
-    rt_kprintf("MIC clocks: PCLKD=%u GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz\n",
-               R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD));
-    audio_clock_config.source_div = TIMER_SOURCE_DIV_1;
-    error = R_GPT_Open(&g_timer_ctrl, &audio_clock_config);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC clock timer open error=%d\n", error);
-        return -RT_ERROR;
-    }
-    error = R_GPT_Start(&g_timer_ctrl);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC clock timer start error=%d\n", error);
-        goto timer_close;
-    }
-    error = R_SSI_Open(&g_i2s0_ctrl, &microphone_config);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC SSI open error=%d\n", error);
-        goto timer_close;
-    }
-    rt_kprintf("MIC SSI opened: SSICR=%08X SSIFCR=%08X FIFO_access=%u bytes RX_IRQ=%d\n",
-               (unsigned)R_SSI0->SSICR, (unsigned)R_SSI0->SSIFCR,
-               1u << g_i2s0_ctrl.fifo_access_size, microphone_config.rxi_irq);
-    if (microphone_config.p_transfer_rx != NULL)
-    {
-        rt_kprintf("MIC DTC access=%u bytes block=%u src=%08X\n",
-                   1u << microphone_config.p_transfer_rx->p_cfg->p_info->size,
-                   microphone_config.p_transfer_rx->p_cfg->p_info->length,
-                   (unsigned)microphone_config.p_transfer_rx->p_cfg->p_info->p_src);
-    }
-    rt_kprintf("MIC RECORD NOW: keep quiet OR sustain AH for this entire 1 second\n");
-    start = rt_tick_get();
+    capture_stop_error = FSP_SUCCESS;
+    capture_finished_at = 0;
+    capture_end_ssicr = 0;
+    capture_end_ssisr = 0;
+    capture_end_ssifsr = 0;
+    capture_end_cpu_words = 0;
+    rt_tick_t start = rt_tick_get();
     capture_active = 1;
     error = R_SSI_Read(&g_i2s0_ctrl, samples, AUDIO_CAPTURE_BYTES);
     if (error == FSP_SUCCESS)
@@ -361,51 +364,149 @@ static int capture_audio(int16_t *samples)
     }
     else
     {
-        rt_kprintf("MIC read error=%d\n", error);
+        rt_kprintf("MIC %s read error=%d\n", label, error);
     }
     capture_active = 0;
-    /* 先保存完成时的寄存器并马上停止接收，再打印较长日志。
-     * 否则打印期间继续接收，会人为制造 FIFO 溢出并干扰诊断。 */
-    unsigned elapsed_ms = (unsigned)((rt_tick_get() - start) * 1000u / RT_TICK_PER_SECOND);
-    unsigned end_ssicr = R_SSI0->SSICR;
-    unsigned end_ssisr = R_SSI0->SSISR;
-    unsigned end_ssifsr = R_SSI0->SSIFSR;
-    error = R_SSI_Stop(&g_i2s0_ctrl);
-    if (error != FSP_SUCCESS)
+    if (!capture_complete)
     {
-        rt_kprintf("MIC SSI stop error=%d\n", error);
+        capture_finished_at = rt_tick_get();
+        capture_end_ssicr = R_SSI0->SSICR;
+        capture_end_ssisr = R_SSI0->SSISR;
+        capture_end_ssifsr = R_SSI0->SSIFSR;
+        capture_end_cpu_words = g_i2s0_ctrl.rx_dest_samples;
+        capture_stop_error = R_SSI_Stop(&g_i2s0_ctrl);
+    }
+    if (capture_stop_error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC %s stop error=%d\n", label, capture_stop_error);
         result = -RT_ERROR;
     }
-    rt_kprintf("MIC receive: result=%d complete=%u rx_events=%u early_idle=%u\n",
-               result, capture_complete, capture_rx_events, capture_early_idle);
-    rt_kprintf("MIC receive: elapsed=%u ms remaining_CPU_words=%u\n", elapsed_ms,
-               (unsigned)g_i2s0_ctrl.rx_dest_samples);
-    rt_kprintf("MIC SSI end: SSICR=%08X SSISR=%08X SSIFSR=%08X\n",
-               end_ssicr, end_ssisr, end_ssifsr);
-    if (microphone_config.p_transfer_rx != NULL)
+    else if (wait_capture_idle() != TEST_PASS)
+    {
+        result = -RT_ETIMEOUT;
+    }
+    rt_kprintf("MIC %s result=%d complete=%u rx_events=%u early_idle=%u idle=%u\n",
+               label, result, capture_complete, capture_rx_events,
+               capture_early_idle, capture_idle_events);
+    rt_kprintf("MIC %s elapsed=%u ms remaining_CPU_words=%u\n", label,
+               (unsigned)((capture_finished_at - start) * 1000u / RT_TICK_PER_SECOND),
+               capture_end_cpu_words);
+    rt_kprintf("MIC %s end: SSICR=%08X SSISR=%08X SSIFSR=%08X\n", label,
+               capture_end_ssicr, capture_end_ssisr, capture_end_ssifsr);
+    if (config->p_transfer_rx != NULL)
     {
         transfer_properties_t properties;
-        error = microphone_config.p_transfer_rx->p_api->infoGet(
-            microphone_config.p_transfer_rx->p_ctrl, &properties);
+        error = config->p_transfer_rx->p_api->infoGet(
+            config->p_transfer_rx->p_ctrl, &properties);
         if (error == FSP_SUCCESS)
         {
-            rt_kprintf("MIC DTC end: remaining_blocks=%u remaining_length=%u\n",
+            rt_kprintf("MIC %s DTC remaining_blocks=%u remaining_length=%u\n", label,
                        (unsigned)properties.block_count_remaining,
                        (unsigned)properties.transfer_length_remaining);
         }
         else
         {
-            rt_kprintf("MIC DTC info error=%d\n", error);
+            rt_kprintf("MIC %s DTC info error=%d\n", label, error);
+            result = -RT_ERROR;
         }
     }
-    rt_thread_mdelay(3);
+    return result;
+}
+
+/* 先接收并丢弃启动段，再保持时钟倒计时，正式采集一个新缓冲。
+ * WS_CONTINUE_ON 保持空闲期间的 BCLK/LRCLK，避免倒计时后重新启动麦克风。
+ * 两段接收共用 65536 字节 RAM；始终先关闭 SSI/DTC，再关闭 GPT1 时钟。 */
+static int capture_audio(int16_t *samples)
+{
+    i2s_cfg_t microphone_config = g_i2s0_cfg;
+    timer_cfg_t audio_clock_config = g_timer_cfg;
+    int result = -RT_ERROR;
+    fsp_err_t error;
+    /* GPT1A 内部供 SSI 时钟：120MHz / 117 / 64 = 16025.64 双声道帧/秒。 */
+    audio_clock_config.period_counts = 117;
+    audio_clock_config.duty_cycle_counts = 58;
+    audio_clock_config.source_div = TIMER_SOURCE_DIV_1;
+    /* SSI 取 32 位时隙中的最高 16 位；FIFO/DTC 每次访问 2 字节。
+     * 本轮只对照启动行为，不同时修改采集格式和回放增益。 */
+    microphone_config.pcm_width = I2S_PCM_WIDTH_16_BITS;
+    microphone_config.word_length = I2S_WORD_LENGTH_32_BITS;
+    microphone_config.ws_continue = I2S_WS_CONTINUE_ON;
+    microphone_config.p_callback = mic_callback;
+    if (configure_audio_pin(BSP_IO_PORT_04_PIN_03) != TEST_PASS ||
+        configure_audio_pin(BSP_IO_PORT_04_PIN_04) != TEST_PASS ||
+        configure_audio_pin(BSP_IO_PORT_04_PIN_06) != TEST_PASS)
+    {
+        rt_kprintf("MIC SSI pin configuration failed\n");
+        return -RT_ERROR;
+    }
+    rt_kprintf("MIC pins P403=%08X P404=%08X P406=%08X\n",
+               (unsigned)R_PFS->PORT[4].PIN[3].PmnPFS,
+               (unsigned)R_PFS->PORT[4].PIN[4].PmnPFS,
+               (unsigned)R_PFS->PORT[4].PIN[6].PmnPFS);
+    rt_kprintf("MIC config: PCM=16 slot=32 channels=2 bytes=%u expected=1022ms\n",
+               (unsigned)AUDIO_CAPTURE_BYTES);
+    rt_kprintf("MIC clocks: PCLKD=%u GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz\n",
+               R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD));
+    error = R_GPT_Open(&g_timer_ctrl, &audio_clock_config);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC clock timer open error=%d\n", error);
+        return -RT_ERROR;
+    }
+    error = R_GPT_Start(&g_timer_ctrl);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC clock timer start error=%d\n", error);
+        goto timer_close;
+    }
+    error = R_SSI_Open(&g_i2s0_ctrl, &microphone_config);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC SSI open error=%d\n", error);
+        goto timer_close;
+    }
+    rt_kprintf("MIC SSI opened: SSICR=%08X SSIFCR=%08X SSIOFR=%08X\n",
+               (unsigned)R_SSI0->SSICR, (unsigned)R_SSI0->SSIFCR, (unsigned)R_SSI0->SSIOFR);
+    rt_kprintf("MIC WS_CONTINUE ON; FIFO_access=%u bytes RX_IRQ=%d\n",
+               1u << g_i2s0_ctrl.fifo_access_size, microphone_config.rxi_irq);
+    if (microphone_config.p_transfer_rx != NULL)
+    {
+        /* DTC 块模式将块长度同时写入 CRAH/CRAL，0x0202 表示长度 2。 */
+        unsigned raw_length = microphone_config.p_transfer_rx->p_cfg->p_info->length;
+        rt_kprintf("MIC DTC access=%u bytes CRA_raw=%04X block_length=%u src=%08X\n",
+                   1u << microphone_config.p_transfer_rx->p_cfg->p_info->size,
+                   raw_length, raw_length & 0xFFu,
+                   (unsigned)microphone_config.p_transfer_rx->p_cfg->p_info->p_src);
+    }
+    rt_kprintf("MIC WARMUP: receiving and discarding startup data; keep quiet\n");
+    result = capture_block("WARMUP", samples, &microphone_config);
+    if (result != TEST_PASS)
+    {
+        goto microphone_close;
+    }
+    print_pcm_statistics("WARMUP-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
+    print_pcm_statistics("WARMUP-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
+    rt_kprintf("MIC countdown: SSI stays open, SSIOFR=%08X LRCONT=%u\n",
+               (unsigned)R_SSI0->SSIOFR, (unsigned)((R_SSI0->SSIOFR >> 8u) & 1u));
+    for (unsigned seconds = 3; seconds > 0; --seconds)
+    {
+        rt_kprintf("MIC recording starts in %u...\n", seconds);
+        result = wait_ms(1000);
+        if (result != TEST_PASS)
+        {
+            goto microphone_close;
+        }
+    }
+    rt_kprintf("MIC RECORD NOW: keep quiet OR sustain AH for this entire 1 second\n");
+    result = capture_block("RECORD", samples, &microphone_config);
+microphone_close:
     error = R_SSI_Close(&g_i2s0_ctrl);
     if (error != FSP_SUCCESS)
     {
         rt_kprintf("MIC SSI close error=%d\n", error);
         result = -RT_ERROR;
     }
-    rt_kprintf("MIC SSI closed: idle_events=%u result=%d\n", capture_idle_events, result);
+    rt_kprintf("MIC SSI closed: result=%d\n", result);
 timer_close:
     if (close_timer("MIC-clock", &g_timer_ctrl) != TEST_PASS)
     {
@@ -589,8 +690,8 @@ static int play_audio(const char *label, const int16_t *samples, unsigned frames
     print_pcm_statistics(label, samples, frames, 1);
     rt_kprintf("AUDIO %s start: frames=%u GPT2_period=%u PWM_period=%u\n",
                label, frames, AUDIO_SAMPLE_PERIOD_COUNTS, AUDIO_PWM_PERIOD_COUNTS);
-    if (configure_pwm_pin(BSP_IO_PORT_07_PIN_02) != TEST_PASS ||
-        configure_pwm_pin(BSP_IO_PORT_07_PIN_03) != TEST_PASS)
+    if (configure_audio_pin(BSP_IO_PORT_07_PIN_02) != TEST_PASS ||
+        configure_audio_pin(BSP_IO_PORT_07_PIN_03) != TEST_PASS)
     {
         goto pins;
     }
@@ -721,23 +822,14 @@ static int run_test(void)
     uint32_t *tail_guard = (uint32_t *)((uint8_t *)samples + AUDIO_CAPTURE_BYTES);
     allocation[0] = AUDIO_BUFFER_GUARD;
     *tail_guard = AUDIO_BUFFER_GUARD;
-    rt_kprintf("REPLAY diagnostic v1: REF-BEFORE -> countdown -> capture -> inspect -> replay -> REF-AFTER\n");
+    rt_kprintf("REPLAY diagnostic v2: REF -> WARMUP -> countdown -> RECORD -> REPLAY -> REF\n");
     rt_kprintf("REPLAY stage 1: reference beep BEFORE; remember whether you hear it\n");
     result = play_reference(samples, "REF-BEFORE");
     if (result != TEST_WAIT)
     {
         goto done;
     }
-    rt_kprintf("REPLAY stage 2: keep quiet for baseline OR sustain AH during recording\n");
-    for (unsigned seconds = 3; seconds > 0; --seconds)
-    {
-        rt_kprintf("MIC recording starts in %u...\n", seconds);
-        result = wait_ms(1000);
-        if (result != TEST_PASS)
-        {
-            goto done;
-        }
-    }
+    rt_kprintf("REPLAY stage 2: warmup then countdown; keep quiet until recording cue\n");
     result = capture_audio(samples);
     if (allocation[0] != AUDIO_BUFFER_GUARD || *tail_guard != AUDIO_BUFFER_GUARD)
     {

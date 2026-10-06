@@ -1,8 +1,8 @@
 # 录音回放逐步排查：audio-replay
 
-日期：2026-10-06。状态：诊断版 v1 安静基线已完成，前后参考音正常，中间无声；待同一固件持续发声对照。之前旧版回放没有听到自己的声音，未通过验收。默认歌曲 `audio-song` 和提示音已经通过试听，因此先集中检查录音数据，同时验证回放例程自己的输出路径。
+日期：2026-10-06。状态：诊断版 v1 安静/持续发声两轮均完成，用户确认前后参考音正常，中间无声；数据未显示明确的人声响应。当前交付 v2 预热对照版，待实物复测。之前旧版回放没有听到自己的声音，未通过验收。默认歌曲 `audio-song` 和提示音已经通过试听，因此先集中检查录音数据，同时验证回放例程自己的输出路径。
 
-## 第一轮：安静基线
+## 当前 v2 操作：安静与发声对照
 
 J8 喇叭沿用当前接线。通过 COM8 输入：
 
@@ -10,10 +10,10 @@ J8 喇叭沿用当前接线。通过 COM8 输入：
 hmi_test audio-replay
 ```
 
-本轮从头到尾保持安静，先建立基线，不要求辨认自己的声音。关注开头和结尾各约半秒的参考提示音是否都正常。总流程约 8 秒，加上日志输出可能略长：
+本轮从头到尾保持安静，先建立基线，不要求辨认自己的声音。关注开头和结尾各约半秒的参考提示音是否都正常。v2 总流程约 9～10 秒，串口打印可能增加耗时：
 
 1. `REF-BEFORE`：约 501Hz 低幅正弦参考音，0.51 秒。
-2. 倒计时 3 秒；看到 `MIC RECORD NOW` 开始录音约 1.02 秒。
+2. `MIC WARMUP`：接收约 1.02 秒启动数据，打印左右声道统计后丢弃。SSI 保持打开，`WS_CONTINUE ON/LRCONT=1` 配置持续时钟；倒计时 3 秒后，看到 `MIC RECORD NOW` 开始正式录音约 1.02 秒。
 3. `MIC recording finished` 后停止采集，再打印 SSI、左右声道、四段窗口与 PCM 处理数据。
 4. 等待 1 秒，`RECORDED-L` 播放本次左声道录音；安静时可能是很小的底噪。
 5. 间隔半秒，`REF-AFTER` 重播同一参考音，清理并返回 IDLE。
@@ -22,19 +22,19 @@ hmi_test audio-replay
 
 ## 第二轮：持续发声
 
-第一轮日志分析后再执行同一命令。尽量保持相同距离和环境；看到倒计时 `1...` 后准备发声，`MIC RECORD NOW` 时对着板载 MIC 持续说“啊——”，直到 `MIC recording finished` 就停止。录音只有约 1 秒，先用持续声音，便于判断声学响应，随后再用短词检查语音可辨识性。
+保存 v2 安静基线后再执行同一命令，完成 v2 发声对照。尽量保持相同距离和环境；看到倒计时 `1...` 后准备发声，`MIC RECORD NOW` 时对着板载 MIC 持续说“啊——”，直到 `MIC recording finished` 就停止。录音只有约 1 秒，先用持续声音，便于判断声学响应，随后再用短词检查语音可辨识性。
 
 分别比较两轮的 `RAW-L/WIN-L`、`PREPARED-L` 和 `RECORDED-L`，报告是否听到自己刚才的发声、前后参考音是否正常。不要在没有对照日志时只凭一个最大值判断录音正确。
 
 ## 新日志的含义
 
-每行控制在当前 128 字节串口格式化缓冲以内，不调整全局串口配置。详细统计在接收停止后打印；回调只更新标志，PWM 中断只更新占空比和少量计数，不打印。
+每行控制在当前 128 字节串口格式化缓冲以内，不调整全局串口配置。详细统计在接收停止后打印；RX 完成回调保存状态并立即停止接收/DTC，PWM 中断只更新占空比和少量计数，不打印。
 
 | 日志 | 检查内容 | 如何定位 |
 | --- | --- | --- |
 | `MIC config/clocks/SSI opened/DTC access` | PCM=16、时隙=32、FIFO/DTC 每次 2 字节、SSI 寄存器、120MHz PCLKD、RX 中断号 | 排查配置、时钟和传输宽度；正常配置不能单独证明波形正确 |
-| `MIC receive` | 接收结果、RX 完成回调、提前 IDLE、约 1022ms 时长、CPU 尾部剩余样本 | 超时、提前 IDLE 或剩余 CPU 样本不为 0，优先检查 SSI/DTC |
-| `MIC SSI end/DTC end/SSI closed` | 停止前的寄存器快照、DTC 剩余、停止回调 | DTC `remaining_length` 可能是块内重装长度，不能要求它一定为 0；错误中断会清除部分 SSI 标志，结束快照不覆盖全部历史错误 |
+| `MIC WARMUP/RECORD result` | 接收结果、RX 完成回调、提前 IDLE、约 1022ms 时长、CPU 尾部剩余样本 | 超时、提前 IDLE 或剩余 CPU 样本不为 0，优先检查 SSI/DTC |
+| `MIC WARMUP/RECORD end/DTC/SSI closed` | 停止前的寄存器快照、DTC 剩余、停止回调 | DTC `remaining_length` 可能是块内重装长度，不能要求它一定为 0；错误中断会清除部分 SSI 标志，结束快照不覆盖全部历史错误 |
 | `MIC buffer guards MATCH` | 65536 字节采集缓冲前后的 32 位哨兵 | 损坏时立即停止处理，排查越界；哨兵匹配不等于整个接收数据有效 |
 | `fill_A5A5` | 初始化填充值在整个 L/R 缓冲中的残留 | 大量残留提示未完全填充；少量同值可能是真实样本，不能单独判错 |
 | `RAW-L/RAW-R` | 两个原始声道的整体统计 | 发声时左声道应有可重复的响应；若右声道响应更强，再检查声道顺序，不自动切换 |
@@ -55,19 +55,19 @@ hmi_test audio-replay
 - 前参考音正常，后参考音异常：排查采集后硬件状态、资源清理和缓冲；不能只归因录音幅度。
 - 本例程参考音异常，而 `audio-song` 正常：集中检查本例程的 RAM 读样本和 GPT 配置差异。
 
-目前回放以 16 位 SSI 接收，而已验收的 `audio-mic` 使用 24 位右对齐接收。v1 保持 16 位采集，先取得对照证据；若数据指向格式问题，再安排 24 位路径对照。缺少实物日志时不宣称已经查明原因或修复。
+目前回放以 16 位 SSI 接收，而已验收的 `audio-mic` 使用 24 位右对齐接收。v1 已取得安静/发声对照，当前 v2 仍保持 16 位采集和原幅度处理，先检验预热过程；若预热后仍缺乏声学响应，再安排 24 位路径对照。缺少实物日志时不宣称已经查明原因或修复。
 
 ## 单文件与自测
 
 全部诊断和参考音位于 `src/test/test-audio-replay.c`，没有增加命令或线程；仍通过总入口运行唯一例程。参考音在本次采集缓冲中生成，并调用同一个 `play_audio()`，不调用 `audio-tone` 或 `audio-song`。缓冲共 65544 字节（含8字节哨兵），三次播放串行打开/关闭 GPT2 和 GPT6，停止中断后才释放缓冲。
 
-`scripts/validate_audio_replay.py` 提取实际 C 函数在 ARM 模拟器执行 12 组检查，覆盖 PCM/增益/符号、左右声道统计、SSI 回调标志、参考音/EOF、取消/超时/PWM 错误、四个启动失败位置的清理及处理/播放日志长度。FSP 使用桩，不能代替真实 SSI 数据或试听。另有 30 项主机结构/转换/工具回归通过；结果见 `logs/audio-replay-diagnostic-arm.log` 和 `logs/audio-replay-diagnostic-host-tests.log`。
+`scripts/validate_audio_replay.py` 提取实际 C 函数在 ARM 模拟器执行 17 组检查，覆盖 PCM/增益/符号、左右声道统计、SSI 回调标志、预热/正式录音完整生命周期、各阶段取消/接收超时/提前IDLE/读与启动失败/Stop失败/IDLE超时清理、参考音/EOF、取消/超时/PWM 错误、四个启动失败位置的清理及处理/播放日志长度。FSP 使用桩，不能代替真实 SSI 数据或试听。另有 30 项主机结构/转换/工具回归通过；v2 结果见 `logs/audio-replay-warmup-arm.log` 和 `logs/audio-replay-warmup-host-tests.log`。FSP 桩模拟接收和回调，未测量物理时钟波形。
 
 本轮由用户手动测试，助手不打开 COM8。实物结论和下一步修改将依据两轮完整日志记录。
 
-Studio 构建：0 errors、0 warnings；Flash1156532字节、静态RAM529480字节，构建日志 `logs/audio-replay-diagnostic-build.log`。与默认歌曲验收版本相比，静态RAM增加64字节；采集堆缓冲只增加8字节哨兵。
+v2 Studio 构建：0 errors、0 warnings；Flash1157420字节、静态RAM529480字节，构建日志 `logs/audio-replay-warmup-build.log`。预热复用原缓冲，仍只申请65544字节；`src/hal_entry.c` 保持原样。
 
-DAP-LINK/PyOCD 已成功烧录并复位，实际编程1156624字节，日志 `logs/audio-replay-diagnostic-flash.log`。本轮没有自动运行录音命令或占用COM8。
+v2 已通过DAP-LINK/PyOCD成功烧录，programmed1157520字节，进程退出码0，记录 `logs/audio-replay-warmup-flash.log`；本轮没有自动运行录音命令或占用COM8。用户完成正式录音试听前，不把软件自测记作回放验收通过。
 
 ## 第一轮实物记录：安静基线（2026-10-06）
 
@@ -166,3 +166,116 @@ REPLAY diagnostic finished result=1; report both beeps AND recorded voice
 TEST RESULT audio-replay WAIT code=1 elapsed=8241 ms
 TEST IDLE
 ```
+
+
+## 第二轮实物记录：持续发声，仍无回放（2026-10-06）
+
+固件仍为 v1。用户明确确认从 `MIC RECORD NOW` 到 recording finished 持续发声，中间回放无声，前后参考音正常。两轮后段数据很接近，不能判定“已经录到人声”。`changed` 大于零只证明样本变化；正常完成和缓冲完整只证明接收与输出流程完成。
+
+| 指标 | 安静 | 持续发声 |
+| --- | ---: | ---: |
+| 第一段最大值 | 32763 | 32762 |
+| 后三段 mean_abs_ac | 204 / 349 / 220 | 239 / 359 / 199 |
+| 整段 gain_q8 | 23 | 23 |
+| 处理后 mean_abs_ac | 377 | 371 |
+| 中间播放样本 / PWM 错误 | 16384 / 0 | 16384 / 0 |
+| 人工试听 | 中间无声 | 中间无声 |
+
+判断：参考音支持播放路径正常；录音存在可重复的启动峰值与缓慢漂移，未见明确发声响应。不能据此断言麦克风损坏，也不能只提高播放增益后宣称修复。当前优先检查麦克风启动与连续时钟。
+
+用户持续发声原始日志：
+
+```text
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >REPLAY diagnostic v1: REF-BEFORE -> countdown -> capture -> inspect -> replay -> REF-AFTER
+REPLAY stage 1: reference beep BEFORE; remember whether you hear it
+PCM REF-BEFORE n=8192 min=-3000 max=3000 mean=0 ac_peak=3000
+PCM REF-BEFORE mean_abs_ac=1866 zero=513 changed=8190 clipped=0
+AUDIO REF-BEFORE start: frames=8192 GPT2_period=7488 PWM_period=1500
+AUDIO REF-BEFORE output samples=8192/8192 pwm_error=0 result=1
+AUDIO REF-BEFORE duty_A=682..818 active_duty_samples=7673 elapsed=518 ms
+REPLAY stage 2: keep quiet for baseline OR sustain AH during recording
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC config: PCM=16 slot=32 channels=2 bytes=65536 expected=1022ms
+MIC clocks: PCLKD=120000000 GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz
+MIC SSI opened: SSICR=400B4000 SSIFCR=80000000 FIFO_access=2 bytes RX_IRQ=38
+MIC DTC access=2 bytes block=514 src=4004E01C
+MIC RECORD NOW: keep quiet OR sustain AH for this entire 1 second
+MIC receive: result=0 complete=1 rx_events=2 early_idle=0
+MIC receive: elapsed=1023 ms remaining_CPU_words=0
+MIC SSI end: SSICR=440B4001 SSISR=00000000 SSIFSR=00010901
+MIC DTC end: remaining_blocks=0 remaining_length=2
+MIC SSI closed: idle_events=1 result=0
+MIC buffer guards MATCH
+MIC recording finished; stop speaking. REPLAY stage 3: inspect L/R and prepare
+MIC buffer fill_A5A5=0/32768 (large count suggests incomplete reception)
+PCM RAW-L n=16384 min=-3384 max=32762 mean=463 ac_peak=32299
+PCM RAW-L mean_abs_ac=4278 zero=9 changed=14535 clipped=1
+PCM RAW-R n=16384 min=0 max=0 mean=0 ac_peak=0
+PCM RAW-R mean_abs_ac=0 zero=16384 changed=0 clipped=0
+MIC window=0 frames=0..4095 (~256ms)
+PCM WIN-L n=4096 min=-2108 max=32762 mean=8593 ac_peak=24169
+PCM WIN-L mean_abs_ac=8881 zero=9 changed=3968 clipped=1
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=0 L=0000/0 R=0000/0
+MIC raw frame=1 L=0000/0 R=0000/0
+MIC raw frame=2 L=0000/0 R=0000/0
+MIC window=1 frames=4096..8191 (~256ms)
+PCM WIN-L n=4096 min=-3384 max=-2100 mean=-3089 ac_peak=989
+PCM WIN-L mean_abs_ac=239 zero=0 changed=3628 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=4096 L=F7C8/-2104 R=0000/0
+MIC raw frame=4097 L=F7C9/-2103 R=0000/0
+MIC raw frame=4098 L=F7C6/-2106 R=0000/0
+MIC window=2 frames=8192..12287 (~256ms)
+PCM WIN-L n=4096 min=-3055 max=-1693 mean=-2392 ac_peak=699
+PCM WIN-L mean_abs_ac=359 zero=0 changed=3510 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=8192 L=F411/-3055 R=0000/0
+MIC raw frame=8193 L=F415/-3051 R=0000/0
+MIC raw frame=8194 L=F416/-3050 R=0000/0
+MIC window=3 frames=12288..16383 (~256ms)
+PCM WIN-L n=4096 min=-1700 max=-880 mean=-1257 ac_peak=443
+PCM WIN-L mean_abs_ac=199 zero=0 changed=3426 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=12288 L=F95E/-1698 R=0000/0
+MIC raw frame=12289 L=F95E/-1698 R=0000/0
+MIC raw frame=12290 L=F962/-1694 R=0000/0
+MIC DMA complete: frames=16384 min=-3384 max=32762 mean=463 ac_peak=32299
+MIC DMA complete: changed=14535 clipped=1
+AUDIO prepared: gain_q8=23 (256=1x) output_peak=2588 limited=0
+PCM PREPARED-L n=16384 min=-345 max=2588 mean=-6 ac_peak=2594
+PCM PREPARED-L mean_abs_ac=371 zero=15 changed=5275 clipped=0
+AUDIO gain reason: target_peak=3000 max_gain=8x; use WIN-L stats to check startup outliers
+REPLAY stage 4: AUDIO REPLAY NOW (recorded LEFT channel)
+PCM RECORDED-L n=16384 min=-345 max=2588 mean=-6 ac_peak=2594
+PCM RECORDED-L mean_abs_ac=371 zero=15 changed=5275 clipped=0
+AUDIO RECORDED-L start: frames=16384 GPT2_period=7488 PWM_period=1500
+AUDIO RECORDED-L output samples=16384/16384 pwm_error=0 result=1
+AUDIO RECORDED-L duty_A=743..809 active_duty_samples=15986 elapsed=1030 ms
+REPLAY stage 5: reference beep AFTER; compare with the first beep
+PCM REF-AFTER n=8192 min=-3000 max=3000 mean=0 ac_peak=3000
+PCM REF-AFTER mean_abs_ac=1866 zero=513 changed=8190 clipped=0
+AUDIO REF-AFTER start: frames=8192 GPT2_period=7488 PWM_period=1500
+AUDIO REF-AFTER output samples=8192/8192 pwm_error=0 result=1
+AUDIO REF-AFTER duty_A=682..818 active_duty_samples=7673 elapsed=518 ms
+REPLAY diagnostic finished result=1; report both beeps AND recorded voice
+TEST RESULT audio-replay WAIT code=1 elapsed=8241 ms
+TEST IDLE
+```
+
+## v2 改动与下一步判据
+
+1. 配置 `I2S_WS_CONTINUE_ON`，先实际接收并丢弃一秒启动段，保持 SSI/GPT1 打开跨过三秒倒计时，再接收正式段。打印 WARMUP-L/R 和 LRCONT 配置，正式段仍有完整四窗口统计。
+2. RX 完成回调保存寄存器、CPU剩余与完成时间后立即 Stop，线程等待有上限的 IDLE 再重启/关闭；Stop、读、超时和取消错误均清理硬件。物理连续时钟尚待实物数据支持，寄存器配置不替代示波器测量。
+3. 明确恢复本例使用的 P403/P404/P406 复用并打印 PFS；没有发现其他测试使用这些引脚，未把引脚冲突记为已确认原因。DTC length 日志改为 `CRA_raw=0202 block_length=2`，避免误读514。
+4. 保留16位采集、32位时隙、同一RAM、原增益与参考播放路径。预热后若正式段不再出现接近32767的启动峰值，说明启动线索获得支持；同时仍需安静/发声差异和实际回放确认。若仍无声学响应，再单独检查24位接收、I²S时序和麦克风接线。
+
+当前未验收录音回放，不把软件模拟或构建通过记为实物修复。

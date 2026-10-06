@@ -2,6 +2,12 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 46 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 录音回放：v1 发声对照失败，交付 v2 预热诊断（2026-10-06）
+
+用户明确确认持续发声，中间回放仍无声，前后参考音正常。v1安静/发声后三窗口mean_abs_ac分别204/349/220与239/359/199，处理后377与371，两轮gain均23/256；没有明确人声响应。完整发声原始日志已归档 `audio-replay.md`，不能把changed或样本完成判为“已录到声音”。
+
+v2先接收并丢弃启动段，WS_CONTINUE保持SSI时钟，倒计时后录正式段；完成回调保存状态并Stop，等待IDLE后重启/关闭，打印WARMUP/RECORD、LRCONT与引脚复用。保留16位采集和原幅度处理，预热复用同一缓冲，不改 `src/hal_entry.c` 或其他例程。17组ARM模拟检查、30项主机回归通过；Studio编译0 errors/0 warnings，Flash1157420字节、静态RAM529480字节，记录 `logs/audio-replay-warmup-*.log`。DAP-LINK/PyOCD已成功烧录1157520字节、退出码0。本轮不打开COM8，录音回放仍未验收，等待用户实物复测。
+
 ## 录音回放恢复排查：诊断版 v1（2026-10-06）
 
 安静基线已由用户完成：前后参考音正常，中间无声，8241ms后WAIT/IDLE。16384帧接收完成、无提前IDLE、缓冲哨兵完整、初始化填充值无残留；左声道变化，右声道全零。两个参考音均8192/8192、pwm_error=0、duty_A=682..818，支持本例程播放路径可以出声。第一256ms窗口有接近满量程的峰值32763，后三窗口均值-3145→-2432→-1258，疑似启动/稳定过程；整段增益23/256约0.09倍，处理后mean_abs_ac=377。安静无声不判录音失败，下一轮用同一固件持续发声对照，暂不修改采集格式或音量。完整日志和分析见 `audio-replay.md` 的“第一轮实物记录”。
@@ -10,7 +16,7 @@
 
 验证：30项主机回归通过；`validate_audio_replay.py` 扩展为12组实际C函数ARM模拟检查，覆盖PCM、统计、SSI回调、参考音、正常完成/EOF、取消/超时、PWM与启动失败清理及日志长度。Studio编译0 errors、0 warnings，Flash1156532字节、静态RAM529480字节。日志 `logs/audio-replay-diagnostic-host-tests.log`、`logs/audio-replay-diagnostic-arm.log`、`logs/audio-replay-diagnostic-build.log`。用户操作与诊断字段见 `audio-replay.md`。
 
-已通过DAP-LINK/PyOCD成功烧录并复位，编程1156624字节，记录 `logs/audio-replay-diagnostic-flash.log`。安静轮已完成，持续发声轮待用户测试；不宣称已查明或解决原因。助手不打开COM8，保持手动测试方式。旧回放失败状态与歌曲已通过状态保留。
+已通过DAP-LINK/PyOCD成功烧录并复位，编程1156624字节，记录 `logs/audio-replay-diagnostic-flash.log`。当时安静轮已完成、发声轮待测；后续发声对照结果见上方v2记录；不宣称已查明或解决原因。助手不打开COM8，保持手动测试方式。旧回放失败状态与歌曲已通过状态保留。
 
 ## 歌曲播放：用户实物试听验收通过（2026-10-06）
 
