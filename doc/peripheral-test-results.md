@@ -1,6 +1,6 @@
 # 独立 MVP 重构回归（2026-10-01）
 
-2026-10-07 audio-record首轮实物导出：用户mic-record-02录音288384帧/5998ms，保存40064帧/约5秒，overrun=0、storage_clipped=0、CRC=8B437AD7，WAV数据区与完整打印一致，MP3已生成；处理最大1512µs，29659ms后WAIT/IDLE。人声听感仍待反馈。首次COM8拒绝访问留下空日志的脚本问题已修复，12项主机检查通过，详情和控制日志见audio-record.md。
+2026-10-07 audio-record首轮实物导出：用户mic-record-02录音288384帧/5998ms，保存40064帧/约5秒，overrun=0、storage_clipped=0、CRC=8B437AD7，WAV数据区与完整打印一致，MP3已生成；处理最大1512µs，29659ms后WAIT/IDLE。用户随后确认持续说话但电脑MP3只有沙沙声，麦克风语音采集未通过。首次COM8拒绝访问留下空日志的脚本问题已修复，12项主机检查通过，详情和控制日志见audio-record.md。
 
 2026-10-07新增audio-record：前约1秒预热，完整保存后5秒约8kHz/PCM16录音，关闭SSI/GPT后打印80128字节，电脑校验并转WAV/MP3。9组ARM、10项主机（含真实FFmpeg编解码）、17项入口/独立性检查通过；Studio 0 errors/0 warnings，Flash1168016、静态RAM543528字节，SWD烧录成功。独立Cortex-M4算法基准32块最大2258.2µs、平均2257.1µs，低于输入块间隔7987µs；不代替真实SSI录音。助手未打开COM8，实际人声仍待用户试听，详见`audio-record.md`。
 
