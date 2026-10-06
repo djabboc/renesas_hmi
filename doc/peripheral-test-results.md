@@ -18,13 +18,49 @@ TEST IDLE
 
 原始日志：`logs/peripherals_20261006_202150.log`。测试后线程列表只有原有系统线程，未留下测试线程；堆 used=11128、available=114720，COM8 released。板端证明定时播放完成与线程退出，不代替喇叭有声及音质确认。用户回复“重试”，尚未确认听到声音。重试时 COM8 被其他程序占用，主机返回 WinError 5（拒绝访问），未发送测试命令，也未播放声音；记录 `logs/peripherals_20261006_202314.log`。已请用户关闭占用 COM8 的终端后重试；录音回放等待提示音试听反馈后继续。
 
+## 音频提示音：关闭占用终端后重试完成（2026-10-06）
+
+用户关闭占用 COM8 的串口终端并回复“已关闭，可以重试”。预告后等待 3 秒，再执行一轮半秒低幅提示音；命令上限 8 秒。
+
+```text
+msh >hmi_test status
+TEST STATUS ready=1 busy=0
+audio-tone runs=1 last=WAIT
+msh >hmi_test audio-tone
+TEST BEGIN audio-tone
+msh >AUDIO output samples=8000/8000; listening confirmation required
+TEST RESULT audio-tone WAIT code=1 elapsed=509 ms
+TEST IDLE
+```
+
+日志：`logs/peripherals_20261006_202410.log`。系统线程列表正常，used=11128、available=114720，与第一次测试相同；COM8 已释放。用户随后确认“听到了，声音正常”，结合 8000/8000 样本与正常退出，本项低幅提示音人工验收通过；录音回放继续测试。该结论不代表喇叭满功率匹配或长期驱动能力已验证。
+
+## 音频录音回放：采集与播放完成，试听待确认（2026-10-06）
+
+用户确认准备好录音回放，预告后等待 3 秒，运行现有独立 `audio-replay` 例程。采集 8192 个双声道帧后回放左声道，主机命令上限 8 秒。
+
+```text
+msh >hmi_test status
+TEST STATUS ready=1 busy=0
+audio-tone runs=2 last=WAIT
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >MIC capture 8192 stereo frames at ~16026Hz; microphone on LEFT
+MIC DMA complete left min=-587260 max=4836601 changed=7791/8191; acoustic response needs speaking test
+AUDIO output samples=8192/8192; listening confirmation required
+TEST RESULT audio-replay WAIT code=1 elapsed=1057 ms
+TEST IDLE
+```
+
+原始日志：`logs/peripherals_20261006_202537.log`。采集 DMA 与回放样本均完成，1057 ms 后正常退出。测试后系统线程列表正常，used=11128、available=114720，与提示音测试后相同；maximum=89192，反映本次录音缓冲的峰值分配。COM8 已释放。用户选择自行运行测试，实际回放能否辨认其发声及音质仍待反馈，当前不自动记为已通过。已提供手动执行步骤，后续不自动重试或占用 COM8。
+
 ## 当前验收范围（2026-10-02 更新）
 
 按用户最新要求，删除 RTC 长时间走时精度测试，保留音频输出/录音回放与 CAN 外部收发两类待办。RTC 短时走时、闹钟的已通过记录保留。
 
 | 项目 | 当前状态与证据 |
 | --- | --- |
-| 音频输出/录音回放 | 2026-10-06 J8 已连接喇叭；提示音板端完成，试听与回放待验收 |
+| 音频输出/录音回放 | 2026-10-06 J8 已连接喇叭；提示音板端与人工试听通过，回放待验收 |
 | CAN外部收发 | 等待 USB-CAN 或另一 CAN 节点；内部回环已通过 |
 | JPEG到LCD联合显示（已补齐） | 灰图及480×272彩色风光图均经用户视觉确认；彩色图12/12区域匹配、解码与校验16 ms、30205 ms正常退出；G2D仍仅验证内存 |
 
