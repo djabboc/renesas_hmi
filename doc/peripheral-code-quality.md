@@ -55,7 +55,7 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 | `adc-low` | 验证 ADC 接近零电压的读数。 | A0/P000 接 GND；32 次采样均应低于 100 LSB；结束恢复引脚。 |
 | `adc-sample` | 报告 Arduino A0 的 ADC 原始采样值。 | A0/P000 对应 ADC0 通道 0；采样 32 次；悬空读数不能证明精度。 |
 | `audio-mic` | 验证 SSI0/DTC 麦克风采样链路。 | GPT1 提供采样时钟；采集左声道，统计幅度和变化数；声音质量仍需实际发声确认。 |
-| `audio-replay` | 独立完成麦克风录音和扬声器回放。 | 3 秒倒计时、约 1 秒录音、1 秒停声间隔、回放；16 位采样复用 64KB 缓冲，原地单声道/去直流/有限增益/淡入淡出；先关闭硬件再释放缓冲。 |
+| `audio-replay` | 独立完成麦克风录音和扬声器回放。 | 前后参考音复用同一 RAM/PWM 路径，倒计时/录音/处理/回放；16 位采集、左右声道/分段统计、哨兵与 SSI/PWM 诊断；先关闭硬件再释放缓冲。 |
 | `audio-tone` | 通过 GPT6 差分 PWM 播放固定提示音。 | GPT2 按采样率更新占空比；播放约半秒后关闭两个定时器，结果等待试听。 |
 | `audio-song` | 单文件播放 MP3 离线转换的器乐片段。 | 16kHz PCM 数组在 Flash；GPT2 采样中断更新 GPT6 差分 PWM，限幅/EOF/取消/超时/硬件错误检查，独立初始化和清理；默认歌曲用户试听通过。 |
 | `can-bus` | 验证 CAN0 和 XL2551 的外部总线收发。 | 接 500 kbit/s 对端及共地；对端收到 0x321 后用 0x322 回复相同 8 字节。 |
@@ -110,7 +110,7 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 
 歌曲例程另有 `scripts/validate_audio_song.py`：提取实际 PWM 回调、初始化和清理函数执行 5 组 ARM 模拟检查，包括 EOF、完成、取消/超时、错误注入和关闭顺序。长 PCM 数组位于 `test-audio-song.c` 末尾，转换脚本只更新两对生成标记内的数据；手写硬件逻辑留在文件前部。当前共有 46 个独立例程，详细说明见 `audio-song.md`。
 
-`scripts/validate_audio_replay.py` 从实际 `test-audio-replay.c` 提取 PCM 处理、PWM 回调及可取消等待函数，以 Studio ARM GCC 编译并在 ARM 模拟器执行。6 组检查覆盖左右声道与直流、常量输入、正负满幅、最大增益、PWM 限幅与错误、协作停止，缓冲前后加哨兵检查越界。它检查实际软件算术，不能替代 16 位 SSI/DTC 实物采样与人耳试听。
+`scripts/validate_audio_replay.py` 从实际 `test-audio-replay.c` 提取 PCM 处理、统计、SSI 回调、参考音、PWM 播放及可取消等待函数，以 Studio ARM GCC 编译并在 ARM 模拟器执行。12 组检查覆盖左右声道与直流、常量输入、正负满幅、最大增益、PWM 限幅与错误、协作停止、统计、参考音/EOF、超时/启动失败清理和日志长度；缓冲前后加哨兵检查越界。它使用 FSP 桩，不能替代 16 位 SSI/DTC 实物采样与人耳试听。逐步操作见 `audio-replay.md`。
 
 ```powershell
 python scripts/validate_audio_replay.py --dependencies logs/oled-validation/python

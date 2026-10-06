@@ -1,8 +1,10 @@
 > 2026-10-01 结构迁移；2026-10-06 新增歌曲例程后：当前入口为 `src/test-main.c`，46 个例程位于 `src/test/test-*.c`。下文旧文件名、自动启动方式和命令是历史记录；当前用法以 `doc/peripheral-tests.md` 和 `doc/peripheral-code-quality.md` 为准。BLE 音乐任务继续取消，UART/遥控仍受固件限制。
 
-2026-10-06 当前音频任务：按用户要求暂停 `audio-replay`，新增独立单文件 `audio-song`。本项目合成《欢乐颂》MP3，电脑端离线转为 16kHz 单声道 PCM，由 GPT2/GPT6 在 J8 播放约 12.23 秒；提供转换脚本和 `doc/audio-song.md`。30 项主机检查与 5 组 ARM 模拟检查通过，Studio 编译 0 errors、0 warnings。用户随后确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，歌曲验收通过；录音回放继续暂停。
+2026-10-06 歌曲任务交付/验收记录：当时按用户要求暂停 `audio-replay`，新增独立单文件 `audio-song`。本项目合成《欢乐颂》MP3，电脑端离线转为 16kHz 单声道 PCM，由 GPT2/GPT6 在 J8 播放约 12.23 秒；提供转换脚本和 `doc/audio-song.md`。30 项主机检查与 5 组 ARM 模拟检查通过，Studio 编译 0 errors、0 warnings。用户随后确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，歌曲验收通过；该阶段录音回放暂停，后续恢复见下一条记录。
 
 # HMI 示例开发路线图
+
+2026-10-06 后续：用户恢复 `audio-replay`，先逐步定位录音/播放问题。交付诊断版v1：同一RAM/PWM路径前后参考音、SSI/DTC与缓冲检查、左右声道和分段统计、处理后幅度、三次PWM播放状态。30项主机检查、12组ARM检查及Studio构建通过；操作见 `doc/audio-replay.md`，待用户安静/发声两轮对照日志和试听，不记为回放验收通过。
 
 更新日期：2026-10-01
 

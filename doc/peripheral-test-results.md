@@ -2,6 +2,14 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 46 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 录音回放恢复排查：诊断版 v1（2026-10-06）
+
+用户在歌曲播放验收通过后恢复 `audio-replay`，要求逐步区分录音与播放问题并增加日志。当前先保持16位SSI/32位时隙及原有低幅处理，增加本文件同一RAM/PWM路径的前后参考音；录音停止后打印SSI/DTC状态、完成/提前IDLE、哨兵与填充值、原始左右声道、四段窗口和少量十六进制样本，处理后打印幅度与增益，三次播放各自打印进度、PWM错误、占空比范围。长日志拆为短行，适配现有128字节格式化缓冲；没有在采样中断内打印。
+
+验证：30项主机回归通过；`validate_audio_replay.py` 扩展为12组实际C函数ARM模拟检查，覆盖PCM、统计、SSI回调、参考音、正常完成/EOF、取消/超时、PWM与启动失败清理及日志长度。Studio编译0 errors、0 warnings，Flash1156532字节、静态RAM529480字节。日志 `logs/audio-replay-diagnostic-host-tests.log`、`logs/audio-replay-diagnostic-arm.log`、`logs/audio-replay-diagnostic-build.log`。用户操作与诊断字段见 `audio-replay.md`。
+
+已通过DAP-LINK/PyOCD成功烧录并复位，编程1156624字节，记录 `logs/audio-replay-diagnostic-flash.log`。未取得当前诊断版实物录音和试听结果，不宣称已查明或解决原因。先由用户安静运行一轮、报告前后参考音，再进行持续发声对照。助手不打开COM8，保持手动测试方式。旧回放失败状态与歌曲已通过状态保留。
+
 ## 歌曲播放：用户实物试听验收通过（2026-10-06）
 
 用户在固件 `6d92ec9` 上运行默认歌曲，并确认“声音连续、正常”。实际日志：

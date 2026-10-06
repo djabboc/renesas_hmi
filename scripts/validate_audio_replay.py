@@ -33,32 +33,103 @@ def extract_function(source: str, name: str) -> str:
 
 STUB = r'''#include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 #define RT_UNUSED(value) (void)(value)
 #define RT_ERROR 1
 #define RT_EINTR 9
 #define TEST_PASS 0
+#define TEST_WAIT 1
+#define RT_ETIMEOUT 2
+#define RT_TICK_PER_SECOND 1000
 #define FSP_SUCCESS 0
 #define GPT_IO_PIN_GTIOCA 0
 #define GPT_IO_PIN_GTIOCB 1
+#define TIMER_SOURCE_DIV_1 0
+#define TIMER_MODE_PERIODIC 0
+#define BSP_IO_PORT_07_PIN_02 0x702
+#define BSP_IO_PORT_07_PIN_03 0x703
+#define I2S_EVENT_RX_FULL 2
+#define I2S_EVENT_IDLE 0
 typedef int fsp_err_t;
 typedef unsigned rt_tick_t;
 typedef struct { int unused; } timer_callback_args_t;
+typedef struct { unsigned event; } i2s_callback_args_t;
+typedef struct { unsigned open; } gpt_instance_ctrl_t;
+typedef struct
+{
+    unsigned source_div, mode, period_counts, duty_cycle_counts;
+    void (*p_callback)(timer_callback_args_t *);
+} timer_cfg_t;
 static unsigned clock_ms, stop_at, duties[2], duty_calls;
-static int force_pwm_error, g_timer6_ctrl;
+static int force_pwm_error;
+static gpt_instance_ctrl_t g_timer6_ctrl, g_timer2_ctrl;
+static timer_cfg_t g_timer6_cfg, g_timer2_cfg;
+static void (*sample_callback)(timer_callback_args_t *);
+static unsigned open_calls, close_calls, mute_calls, operation, failed_operation, freeze_samples;
+static unsigned closed_order[2];
+static unsigned max_log_bytes;
+static volatile unsigned capture_complete, capture_active, capture_rx_events, capture_idle_events, capture_early_idle;
 static volatile unsigned playback_position;
 static unsigned playback_frame_count;
 static const int16_t *playback_samples;
 static volatile fsp_err_t playback_error;
+static volatile unsigned playback_duty_min, playback_duty_max, playback_duty_nonzero;
 static rt_tick_t rt_tick_get(void) { return clock_ms; }
 static int test_cancelled(void) { return stop_at && clock_ms >= stop_at; }
 static int test_elapsed(rt_tick_t start, unsigned ms) { return clock_ms - start >= ms; }
-static void rt_thread_mdelay(unsigned ms) { clock_ms += ms; }
-static void rt_kprintf(const char *format, ...) { }
+static void rt_thread_mdelay(unsigned ms)
+{
+    clock_ms += ms;
+    if (sample_callback && !freeze_samples)
+    {
+        for (unsigned index = 0; index < ms * 16; ++index) { sample_callback(NULL); }
+    }
+}
+static void rt_kprintf(const char *format, ...)
+{
+    char buffer[128];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (length > 0 && (unsigned)length > max_log_bytes) { max_log_bytes = (unsigned)length; }
+}
 static fsp_err_t R_GPT_DutyCycleSet(void *timer, unsigned duty, unsigned pin)
 {
     duties[pin] = duty;
     ++duty_calls;
     return force_pwm_error;
+}
+static int configure_pwm_pin(unsigned pin) { return TEST_PASS; }
+static int mute_output_pins(void) { ++mute_calls; return TEST_PASS; }
+static int R_GPT_Open(gpt_instance_ctrl_t *ctrl, const timer_cfg_t *cfg)
+{
+    ++operation;
+    if (operation == failed_operation) { return 7; }
+    ctrl->open = 1; ++open_calls;
+    if (ctrl == &g_timer2_ctrl) { sample_callback = cfg->p_callback; }
+    return FSP_SUCCESS;
+}
+static int R_GPT_Start(gpt_instance_ctrl_t *ctrl)
+{
+    ++operation;
+    if (operation == failed_operation) { return 7; }
+    return FSP_SUCCESS;
+}
+static int R_GPT_Stop(gpt_instance_ctrl_t *ctrl)
+{
+    if (ctrl == &g_timer2_ctrl) { sample_callback = NULL; }
+    return FSP_SUCCESS;
+}
+static int R_GPT_Close(gpt_instance_ctrl_t *ctrl)
+{
+    if (!ctrl->open) { return 7; }
+    ctrl->open = 0;
+    if (close_calls < 2) { closed_order[close_calls] = 6; if (ctrl == &g_timer2_ctrl) { closed_order[close_calls] = 2; } }
+    ++close_calls;
+    return FSP_SUCCESS;
 }
 '''
 
@@ -66,6 +137,12 @@ HARNESS = r'''
 unsigned test_error, tests_passed;
 static struct { uint32_t before; int16_t samples[AUDIO_FRAMES * 2]; uint32_t after; } guarded;
 #define CHECK(condition) do { if (!(condition)) { test_error = __LINE__; return; } } while (0)
+static void reset_playback(void)
+{
+    clock_ms = 0; stop_at = 0; duties[0] = 0; duties[1] = 0; duty_calls = 0;
+    open_calls = 0; close_calls = 0; mute_calls = 0; operation = 0; failed_operation = 0;
+    freeze_samples = 0; force_pwm_error = 0; sample_callback = NULL;
+}
 void validate(void)
 {
     int16_t *samples = guarded.samples;
@@ -139,6 +216,63 @@ void validate(void)
     stop_at = 130;
     CHECK(wait_ms(1000) == -RT_EINTR && clock_ms == 130);
     ++tests_passed;
+
+    struct pcm_statistics statistics;
+    const int16_t stereo[] = {1000, -32768, 3000, 32767, 1000, -32768, 3000, 32767};
+    measure_pcm(stereo, 4, 2, &statistics);
+    CHECK(statistics.minimum == 1000 && statistics.maximum == 3000 && statistics.mean == 2000);
+    CHECK(statistics.ac_peak == 1000 && statistics.mean_abs_ac == 1000 && statistics.changed_samples == 3);
+    measure_pcm(stereo + 1, 4, 2, &statistics);
+    CHECK(statistics.minimum == -32768 && statistics.maximum == 32767 && statistics.clipped_samples == 4);
+    CHECK(statistics.ac_peak == 32768 && statistics.mean_abs_ac == 32767);
+    const int16_t silent[] = {1234, 1234, 1234, 1234};
+    measure_pcm(silent, 4, 1, &statistics);
+    CHECK(statistics.mean == 1234 && statistics.ac_peak == 0 && statistics.mean_abs_ac == 0);
+    ++tests_passed;
+
+    capture_active = 1; capture_complete = 0;
+    i2s_callback_args_t event = {I2S_EVENT_IDLE};
+    mic_callback(&event);
+    CHECK(capture_idle_events == 1 && capture_early_idle == 1);
+    capture_early_idle = 0;
+    event.event = I2S_EVENT_RX_FULL;
+    mic_callback(&event);
+    event.event = I2S_EVENT_IDLE;
+    mic_callback(&event);
+    CHECK(capture_complete == 1 && capture_rx_events == 1 && capture_early_idle == 0);
+    ++tests_passed;
+
+    reset_playback();
+    CHECK(play_reference(samples, "REFERENCE") == TEST_WAIT);
+    CHECK(playback_frame_count == AUDIO_REFERENCE_FRAMES && playback_position == AUDIO_REFERENCE_FRAMES);
+    CHECK(samples[0] == 0 && samples[AUDIO_REFERENCE_FRAMES - 1] == 0);
+    CHECK(samples[328] == 3000 && samples[344] == -3000);
+    CHECK(playback_duty_min == 682 && playback_duty_max == 818 && playback_duty_nonzero > 0);
+    CHECK(close_calls == 2 && closed_order[0] == 2 && closed_order[1] == 6);
+    CHECK(guarded.before == 0x12345678 && guarded.after == 0x87654321 && !sample_callback);
+    ++tests_passed;
+
+    reset_playback(); freeze_samples = 1; stop_at = 3;
+    CHECK(play_audio("CANCEL", samples, 32) == -RT_EINTR);
+    CHECK(open_calls == close_calls && mute_calls == 1 && !sample_callback);
+    reset_playback(); freeze_samples = 1;
+    CHECK(play_audio("TIMEOUT", samples, 32) == -RT_ETIMEOUT);
+    CHECK(clock_ms == AUDIO_PLAYBACK_TIMEOUT_MS && open_calls == close_calls && !sample_callback);
+    reset_playback(); force_pwm_error = 7;
+    CHECK(play_audio("PWM-ERROR", samples, 32) == -RT_ERROR && playback_error == 7);
+    CHECK(open_calls == close_calls && !sample_callback);
+    ++tests_passed;
+
+    for (unsigned failure = 1; failure <= 4; ++failure)
+    {
+        reset_playback(); failed_operation = failure;
+        CHECK(play_audio("STARTUP-ERROR", samples, 32) == -RT_ERROR);
+        CHECK(open_calls == close_calls && !g_timer2_ctrl.open && !g_timer6_ctrl.open && !sample_callback);
+        CHECK(mute_calls == 1);
+    }
+    ++tests_passed;
+    CHECK(max_log_bytes < 126);
+    ++tests_passed;
 }
 '''
 
@@ -155,12 +289,14 @@ def main() -> int:
 
     source = (ROOT / "src/test/test-audio-replay.c").read_text(encoding="utf-8")
     definitions = "\n".join(re.findall(r"^#define AUDIO_.*$", source, flags=re.MULTILINE))
+    statistics_type = re.search(r"struct pcm_statistics\s*\{.*?\};", source, re.S).group(0)
     functions = "\n".join(extract_function(source, name)
-                          for name in ("wait_ms", "prepare_playback", "audio_tick"))
+                          for name in ("measure_pcm", "print_pcm_statistics", "wait_ms", "mic_callback",
+                                       "prepare_playback", "audio_tick", "close_timer", "play_audio", "play_reference"))
     output = ROOT / "logs/audio-validation"
     output.mkdir(parents=True, exist_ok=True)
     harness = output / "harness.c"
-    harness.write_text(STUB + definitions + "\n" + functions + HARNESS, encoding="utf-8")
+    harness.write_text(STUB + definitions + "\n" + statistics_type + "\n" + functions + HARNESS, encoding="utf-8")
     studio = Path(os.environ.get("RTTHREAD_STUDIO", "C:/RT-ThreadStudio"))
     compiler = next(studio.glob("repo/Extract/ToolChain_Support_Packages/ARM/*/10.2.1/bin/arm-none-eabi-gcc.exe"))
     elf_path = output / "harness.elf"
@@ -181,9 +317,9 @@ def main() -> int:
     machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=30000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 6:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/6")
-    print("PASS: 6 ARM checks; stereo/DC, silence, signed limits, gain cap, PWM, cancellation")
+    if error or passed != 12:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/12")
+    print("PASS: 12 ARM groups; PCM/DC/gain/PWM, channel stats, SSI callback, reference/EOF, errors/cleanup, log length")
     return 0
 
 
