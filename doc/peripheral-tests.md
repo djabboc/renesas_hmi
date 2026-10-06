@@ -1,5 +1,7 @@
 # HMI-Board 独立外设测试使用手册
 
+2026-10-07新增`hmi_test audio-record`：预热约1秒后完整录5秒，打印PCM交由`scripts/audio_record_to_mp3.py`保存并生成MP3；仅在用户指定--port时开启COM8。用户直接说话和试听，详见`audio-record.md`。
+
 2026-10-06 v7更新：v6两轮48kHz采集均队列溢出，未进入回放。当前采用四块环形队列、中断信号量唤醒、录音阶段临时优先级14和实时运算局部O2；硬件基准每块O0/O2最大约6152/1870µs（输入间隔7987µs）。15组ARM、30项主机检查及Studio构建通过，新增MIC timing/queue peak日志；语音回放仍未验收，详见 `doc/audio-replay.md`。
 
 
