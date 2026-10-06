@@ -1,6 +1,6 @@
 # 单文件歌曲播放：audio-song
 
-日期：2026-10-06。状态：已完成软件自测、编译和烧录；实际歌曲试听等待用户验收。录音回放 `audio-replay` 按用户要求暂停。
+日期：2026-10-06。状态：软件自测、编译、烧录及用户实物试听验收通过。录音回放 `audio-replay` 按用户要求暂停。
 
 ## 如何测试
 
@@ -12,18 +12,19 @@ hmi_test audio-song
 
 应该听到一遍约 12.23 秒的《欢乐颂》器乐旋律，随后自动静音。不是录音回放，没有倒计时或说话要求。再次输入同一条命令会从头播放；运行中可输入 `hmi_test stop` 提前结束。
 
-预期日志格式如下，**这是验收参考，不是实物测试记录**：
+用户在固件 `6d92ec9` 上手动运行，实际日志如下：
 
 ```text
+msh >hmi_test audio-song
 TEST BEGIN audio-song
-SONG PCM mono rate=16000 samples=195729 bytes=391458 peak=3000 duration=12233 ms
+msh >SONG PCM mono rate=16000 samples=195729 bytes=391458 peak=3000 duration=12233 ms
 SONG playing once on J8; PWM=80kHz, source=offline decoded MP3
 SONG output samples=195729/195729 pwm_error=0; listening confirmation required
-TEST RESULT audio-song WAIT code=1 elapsed=...
+TEST RESULT audio-song WAIT code=1 elapsed=12258 ms
 TEST IDLE
 ```
 
-请提供完整日志，并确认：能听到连续旋律、没有明显断续或严重失真、结束后静音。WAIT 表示软件播放流程完成，最终通过需要你的试听确认。提前停止显示 FAIL/code=-9，是主动取消结果，不等于硬件故障。
+用户确认“声音连续、正常”，本例程验收通过。195729/195729 样本完成、pwm_error=0，12258ms 后返回 WAIT/IDLE。WAIT 是固件对需要人工试听的例程保留的结果，不会因文档验收改为 PASS。提前停止显示 FAIL/code=-9，是主动取消结果，不等于硬件故障。
 
 ## MP3 在哪里解码
 
@@ -45,7 +46,7 @@ TEST IDLE
 4. 每个中断从 Flash 取一个样本，两路占空比围绕 50% 反向变化；样本再次限幅至 ±3000。到数组结尾不再读取，改为两路中点。
 5. 线程等待完成，并检查停止事件、PWM 返回错误和有限超时；依次关闭 GPT2、GPT6，最后将两控制脚设低。
 
-数组使用 `static const int16_t`，占 Flash 391458 字节，不申请整首歌的 RAM 缓冲。静态播放状态只有位置和错误码；线程使用总入口已有的 12KB 栈。播放时长约 12.233 秒，等待上限为时长加 2 秒，超时会清理退出。板上中断运行能力与声音效果仍需实物验收。
+数组使用 `static const int16_t`，占 Flash 391458 字节，不申请整首歌的 RAM 缓冲。静态播放状态只有位置和错误码；线程使用总入口已有的 12KB 栈。播放时长约 12.233 秒，等待上限为时长加 2 秒，超时会清理退出。默认歌曲已通过实物连续播放与试听验收。
 
 ## 替换为自己的 MP3
 
@@ -75,7 +76,7 @@ python scripts/mp3_to_array.py --make-demo scripts/assets/ode-to-joy.mp3 --updat
 - RT-Thread Studio 构建：0 errors、0 warnings；Flash 1151748 字节，静态 RAM 529416 字节。日志：`logs/audio-song-build.log`。
 - DAP-LINK/PyOCD 烧录成功并复位；写入 1151760 字节，记录 `logs/audio-song-flash.log`。ELF 符号表确认 `song_pcm` 的 391458 字节位于 Flash 的 `.text` 区，不占歌曲 RAM 缓冲。
 - `src/hal_entry.c` 原始哈希检查通过；现在共有 46 个独立例程。
-- 本轮不占用 COM8；实际歌曲播放由用户手动运行，试听通过后补充日志和结论。
+- 用户手动运行默认歌曲并确认“声音连续、正常”；日志显示完整样本数、零 PWM 错误、正常返回 IDLE。助手未打开 COM8。本次覆盖默认片段的一次完整播放，不扩展为长期播放或任意素材音质验证。
 
 本地 ARM 验证可复用已有环境：
 

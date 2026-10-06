@@ -2,11 +2,25 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 46 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
-## 歌曲播放：软件自测完成，等待试听（2026-10-06）
+## 歌曲播放：用户实物试听验收通过（2026-10-06）
+
+用户在固件 `6d92ec9` 上运行默认歌曲，并确认“声音连续、正常”。实际日志：
+
+```text
+msh >hmi_test audio-song
+TEST BEGIN audio-song
+msh >SONG PCM mono rate=16000 samples=195729 bytes=391458 peak=3000 duration=12233 ms
+SONG playing once on J8; PWM=80kHz, source=offline decoded MP3
+SONG output samples=195729/195729 pwm_error=0; listening confirmation required
+TEST RESULT audio-song WAIT code=1 elapsed=12258 ms
+TEST IDLE
+```
+
+结论：全部样本完成、PWM 无错误、正常退出，结合人工试听，默认歌曲播放验收通过。固件保留观察性 WAIT，不修改为自动 PASS。本次覆盖默认片段的一次播放；未据此宣称长期压力、主动停止或任意歌曲均已实物验证。录音回放仍按用户要求暂停。
 
 用户暂停录音回放，新增 `test-audio-song.c`。MP3 由电脑端转换为 16kHz、单声道、16 位 PCM；板端直接从 Flash 播放，不宣称在板上实现 MP3 解码。默认素材为本项目合成的《欢乐颂》器乐片段，195729 样本、391458 字节 PCM、峰值 3000、约 12.233 秒。独立配置 GPT6/P702/P703 的 80kHz PWM 和 GPT2 的 16kHz 采样中断，包含限幅、EOF、协作停止、超时、错误诊断及清理。
 
-30 项主机回归通过（新增 7 项转换验证，结构检查更新为 46 个文件）；5 组实际 C 函数 ARM 模拟执行检查通过。Studio 编译 0 errors、0 warnings，Flash 1151748 字节、静态 RAM 529416 字节。构建日志 `logs/audio-song-build.log`，DAP-LINK/PyOCD 烧录成功并复位，写入 1151760 字节，烧录日志 `logs/audio-song-flash.log`。转换脚本 `scripts/mp3_to_array.py`，使用说明 `audio-song.md`。本轮未打开 COM8；实际输出和歌曲试听待用户运行 `hmi_test audio-song` 后验收。录音回放保持暂停，未记为通过。
+交付前自测：30 项主机回归通过（新增 7 项转换验证，结构检查更新为 46 个文件）；5 组实际 C 函数 ARM 模拟执行检查通过。Studio 编译 0 errors、0 warnings，Flash 1151748 字节、静态 RAM 529416 字节。构建日志 `logs/audio-song-build.log`，DAP-LINK/PyOCD 烧录成功并复位，写入 1151760 字节，烧录日志 `logs/audio-song-flash.log`。转换脚本 `scripts/mp3_to_array.py`，使用说明 `audio-song.md`。助手未打开 COM8，实际输出由用户手动运行后确认；录音回放保持暂停，未记为通过。
 
 ## 录音回放改进：回应“没有听到自己的声音”（2026-10-06）
 

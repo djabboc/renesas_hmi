@@ -1,6 +1,6 @@
 > 2026-10-01 结构迁移；2026-10-06 新增歌曲例程后：当前入口为 `src/test-main.c`，46 个例程位于 `src/test/test-*.c`。下文旧文件名、自动启动方式和命令是历史记录；当前用法以 `doc/peripheral-tests.md` 和 `doc/peripheral-code-quality.md` 为准。BLE 音乐任务继续取消，UART/遥控仍受固件限制。
 
-2026-10-06 当前音频任务：按用户要求暂停 `audio-replay`，新增独立单文件 `audio-song`。本项目合成《欢乐颂》MP3，电脑端离线转为 16kHz 单声道 PCM，由 GPT2/GPT6 在 J8 播放约 12.23 秒；提供转换脚本和 `doc/audio-song.md`。30 项主机检查与 5 组 ARM 模拟检查通过，Studio 编译 0 errors、0 warnings；实际声音等待用户试听，不继续下个任务。
+2026-10-06 当前音频任务：按用户要求暂停 `audio-replay`，新增独立单文件 `audio-song`。本项目合成《欢乐颂》MP3，电脑端离线转为 16kHz 单声道 PCM，由 GPT2/GPT6 在 J8 播放约 12.23 秒；提供转换脚本和 `doc/audio-song.md`。30 项主机检查与 5 组 ARM 模拟检查通过，Studio 编译 0 errors、0 warnings。用户随后确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，歌曲验收通过；录音回放继续暂停。
 
 # HMI 示例开发路线图
 
