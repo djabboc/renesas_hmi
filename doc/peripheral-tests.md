@@ -98,6 +98,8 @@ hmi_test can-bus
 
 ## P04/P05 音频：采集 → 输出 → 回放
 
+新增独立原始输入诊断：`hmi_test audio-raw`。连续采集5秒、导出第4秒内约半秒原始PCM24（未经滤波/压缩/增益），电脑生成原始WAV、试听副本、波形/频谱。原始数据2250行，建议用脚本保存全日志；具体命令和两轮安静/发声步骤见[audio-raw.md](audio-raw.md)。
+
 源码：`src/test/test-audio-mic.c`、`test-audio-tone.c`、`test-audio-replay.c`。数字麦克风在 I²S 左声道。`audio-mic` 保留原代码，使用24位右对齐数据并显式符号扩展；当前v7 `audio-replay` 恢复原始BSP麦克风时钟约3.077MHz，24位PCM/32位时隙，连续录240384帧约5秒。左声道40Hz高通、31点FIR低通后三抽一，编码mu-law保存80128个约16kHz样本；关闭采集硬件后回放5秒。
 
 扬声器接板背面标有 `SPEAKER` 的白色 2 针插座，不是 3.5mm 耳机孔。按仓库背面图的方向看，该插座在右侧边缘、绿色 CAN 端子下方、RJ45 网口上方，紧邻 MIC。下图红框标出插座：原图来自本工程 `docs/picture/back.png`，在初始化提交 `11cfc7a` 中已存在；助手只裁剪并添加红框，没有生成板卡图像。

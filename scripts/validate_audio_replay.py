@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def extract_function(source: str, name: str) -> str:
-    match = re.search(r"static (?:int|void|unsigned) " + name + r"\([^)]*\)\s*\{", source)
+    match = re.search(r"static (?:int|void|unsigned|uint32_t) " + name + r"\([^)]*\)\s*\{", source)
     if match is None:
         raise ValueError(f"Missing C function: {name}")
     opening = source.index("{", match.start())

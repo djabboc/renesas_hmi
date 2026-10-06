@@ -1,4 +1,6 @@
-> 2026-10-01 结构迁移；2026-10-06 新增歌曲例程后：当前入口为 `src/test-main.c`，46 个例程位于 `src/test/test-*.c`。下文旧文件名、自动启动方式和命令是历史记录；当前用法以 `doc/peripheral-tests.md` 和 `doc/peripheral-code-quality.md` 为准。BLE 音乐任务继续取消，UART/遥控仍受固件限制。
+> 2026-10-01 结构迁移；2026-10-06 新增歌曲例程后：当前入口为 `src/test-main.c`，47 个例程位于 `src/test/test-*.c`。下文旧文件名、自动启动方式和命令是历史记录；当前用法以 `doc/peripheral-tests.md` 和 `doc/peripheral-code-quality.md` 为准。BLE 音乐任务继续取消，UART/遥控仍受固件限制。
+
+2026-10-07新增独立audio-raw任务，保留audio-replay v7对照：5秒连续采集，导出稳定阶段约半秒原始24位样本，电脑生成WAV和波形/频谱；8组ARM、38项主机和原回放15组ARM回归通过，实际输入内容待用户测试。操作见`doc/audio-raw.md`。
 
 2026-10-06 v7更新：v6两轮48kHz采集均队列溢出，未进入回放。当前采用四块环形队列、中断信号量唤醒、录音阶段临时优先级14和实时运算局部O2；硬件基准每块O0/O2最大约6152/1870µs（输入间隔7987µs）。15组ARM、30项主机检查及Studio构建通过，新增MIC timing/queue peak日志；语音回放仍未验收，详见 `doc/audio-replay.md`。
 
