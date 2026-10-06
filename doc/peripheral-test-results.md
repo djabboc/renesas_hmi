@@ -2,13 +2,29 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 45 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
+## 音频输出恢复验收：提示音板端完成，试听待确认（2026-10-06）
+
+用户确认 J8 已连接 JBL 4Ω C11R 喇叭，要求开始测试。未修改或重新烧录固件，执行现有半秒低幅提示音例程；主机命令设 8 秒上限，确认调度器空闲后发送，结束释放 COM8。
+
+```text
+msh >hmi_test status
+TEST STATUS ready=1 busy=0
+msh >hmi_test audio-tone
+TEST BEGIN audio-tone
+msh >AUDIO output samples=8000/8000; listening confirmation required
+TEST RESULT audio-tone WAIT code=1 elapsed=509 ms
+TEST IDLE
+```
+
+原始日志：`logs/peripherals_20261006_202150.log`。测试后线程列表只有原有系统线程，未留下测试线程；堆 used=11128、available=114720，COM8 released。板端证明定时播放完成与线程退出，不代替喇叭有声及音质确认。用户回复“重试”，尚未确认听到声音。重试时 COM8 被其他程序占用，主机返回 WinError 5（拒绝访问），未发送测试命令，也未播放声音；记录 `logs/peripherals_20261006_202314.log`。已请用户关闭占用 COM8 的终端后重试；录音回放等待提示音试听反馈后继续。
+
 ## 当前验收范围（2026-10-02 更新）
 
 按用户最新要求，删除 RTC 长时间走时精度测试，保留音频输出/录音回放与 CAN 外部收发两类待办。RTC 短时走时、闹钟的已通过记录保留。
 
 | 项目 | 当前状态与证据 |
 | --- | --- |
-| 音频输出/录音回放 | 等待 J8 配套连接线及扬声器试听 |
+| 音频输出/录音回放 | 2026-10-06 J8 已连接喇叭；提示音板端完成，试听与回放待验收 |
 | CAN外部收发 | 等待 USB-CAN 或另一 CAN 节点；内部回环已通过 |
 | JPEG到LCD联合显示（已补齐） | 灰图及480×272彩色风光图均经用户视觉确认；彩色图12/12区域匹配、解码与校验16 ms、30205 ms正常退出；G2D仍仅验证内存 |
 
