@@ -166,7 +166,7 @@ static int R_SSI_Read(ssi_instance_ctrl_t *ctrl, void *destination, unsigned byt
 {
     ++ssi_reads;
     if (ssi_reads == fail_read_at) { return 7; }
-    if (bytes != 1024 || !ctrl->open) { return 7; }
+    if (bytes != 3072 || !ctrl->open) { return 7; }
     ssi_destination = destination; ssi_offset = 0; ssi_active = 1;
     return FSP_SUCCESS;
 }
@@ -192,8 +192,8 @@ static void rt_thread_mdelay(unsigned ms)
             ssi_idle_pending = 0; i2s_callback_args_t event = {I2S_EVENT_IDLE}; ssi_callback(&event);
         }
         capture_phase += 120000;
-        unsigned frames = capture_phase / 7488; capture_phase %= 7488;
-        if (ssi_burst) { frames = 256; }
+        unsigned frames = capture_phase / 2496; capture_phase %= 2496;
+        if (ssi_burst) { frames = 768; }
         mock_capture_step(frames);
         playback_phase += 120000;
         frames = playback_phase / 7488; playback_phase %= 7488;
@@ -218,11 +218,11 @@ static void mock_capture_step(unsigned frames)
     for (unsigned index = 0; index < frames && ssi_active; ++index)
     {
         int sample = 1024;
-        if (absolute_frame % 32 >= 16) { sample = -1024; }
+        if (absolute_frame / AUDIO_DECIMATION % 32 >= 16) { sample = -1024; }
         ssi_destination[ssi_offset * 2] = ((uint32_t)(sample * 256)) & 0xFFFFFF;
         ssi_destination[ssi_offset * 2 + 1] = 0;
         ++ssi_offset; ++absolute_frame;
-        if (ssi_offset == AUDIO_BLOCK_FRAMES)
+        if (ssi_offset == AUDIO_CAPTURE_BLOCK_FRAMES)
         {
             if (corrupt_guard) { ssi_destination[-1] ^= 1; }
             ssi_active = 0; i2s_callback_args_t event = {I2S_EVENT_RX_FULL}; ssi_callback(&event);
@@ -260,7 +260,9 @@ void validate(void)
     ++tests_passed;
     CHECK(pcm24_signed(0x007FFFFF) == 8388607 && pcm24_signed(0x00800000) == -8388608);
     CHECK(pcm24_signed(0xFFFFFFFF) == -1 && pcm24_signed(0xFF7FFFFF) == 8388607);
-    CHECK(AUDIO_FRAMES == 80128 && AUDIO_BLOCK_COUNT == 626 && AUDIO_BLOCK_BYTES == 1024);
+    CHECK(AUDIO_FRAMES == 80128 && AUDIO_BLOCK_COUNT == 626 && AUDIO_BLOCK_BYTES == 3072);
+    CHECK(AUDIO_CLOCK_PERIOD == 39 && AUDIO_CAPTURE_FRAMES == 240384);
+    CHECK(AUDIO_CAPTURE_BLOCK_FRAMES == 384 && AUDIO_SAMPLE_PERIOD == 7488);
     CHECK((uint64_t)AUDIO_FRAMES * AUDIO_SAMPLE_PERIOD * 1000 / AUDIO_CLOCK_HZ == 4999);
     ++tests_passed;
 
@@ -269,18 +271,27 @@ void validate(void)
     CHECK(capture_audio(samples) == TEST_PASS);
     CHECK(capture_completed == 626 && capture_consumed == 626 && ssi_reads == 626);
     CHECK(ssi_stops == 1 && ssi_closes == 1 && capture_overruns == 0 && capture_early_idle == 0);
-    CHECK(absolute_frame == AUDIO_FRAMES && clock_ms >= 5000 && clock_ms <= 5002 && hardware_closed());
+    CHECK(absolute_frame == AUDIO_CAPTURE_FRAMES && clock_ms >= 5000 && clock_ms <= 5002 && hardware_closed());
     int previous_input = 0;
     int previous_output = 0;
-    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
+    int reference_history[31] = {0};
+    for (unsigned index = 0; index < AUDIO_CAPTURE_FRAMES; ++index)
     {
         int input = 262144;
-        if (index % 32 >= 16) { input = -262144; }
-        int filtered = input - previous_input + previous_output - previous_output / 64;
+        if (index / 3 % 32 >= 16) { input = -262144; }
+        int filtered = input - previous_input + previous_output - previous_output / 192;
         previous_input = input;
         previous_output = filtered;
-        unsigned expected = encode_mulaw(filtered / 32);
-        CHECK(samples[index] == expected); /* 全部帧顺序一致，不能重复或漏掉某个块。 */
+        /* 独立移位历史作为参考，不复用固件的环形缓冲索引。 */
+        for (unsigned tap = 30; tap > 0; --tap) { reference_history[tap] = reference_history[tap - 1]; }
+        reference_history[0] = filtered;
+        if (index % 3 == 2)
+        {
+            int64_t sum = 0;
+            for (unsigned tap = 0; tap < 31; ++tap) { sum += (int64_t)reference_history[tap] * lowpass_coefficients[tap]; }
+            unsigned expected = encode_mulaw((int)(sum / 32768) / 32);
+            CHECK(samples[index / 3] == expected); /* 全部输出样本顺序一致，不能重复或漏块。 */
+        }
     }
     unsigned total = 0;
     for (unsigned second = 0; second < 5; ++second)
@@ -289,7 +300,7 @@ void validate(void)
         CHECK(capture_statistics[second].minimum == -262144 && capture_statistics[second].maximum == 262144);
         total += capture_statistics[second].frames;
     }
-    CHECK(total == AUDIO_FRAMES && payload[0] == AUDIO_GUARD && payload[(AUDIO_FRAMES + 4) / 4] == AUDIO_GUARD);
+    CHECK(total == AUDIO_CAPTURE_FRAMES && payload[0] == AUDIO_GUARD && payload[(AUDIO_FRAMES + 4) / 4] == AUDIO_GUARD);
     ++tests_passed;
 
     prepare_playback(samples); unsigned started = clock_ms;
@@ -385,7 +396,7 @@ void validate(void)
     CHECK(filter_microphone(8388607) == 8388607);
     int filtered_dc = 0;
     for (unsigned index = 0; index < 16026; ++index) { filtered_dc = filter_microphone(8388607); }
-    CHECK(filtered_dc >= 0 && filtered_dc < 64);
+    CHECK(filtered_dc >= 0 && filtered_dc < 192);
     const int sine[] = {0,1598,3135,4551,5793,6811,7568,8035,
                         8192,8035,7568,6811,5793,4551,3135,1598,
                         0,-1598,-3135,-4551,-5793,-6811,-7568,-8035,
@@ -395,7 +406,7 @@ void validate(void)
     int voice_peak = 0;
     for (unsigned index = 0; index < 32000; ++index)
     {
-        int value = filter_microphone((int)index * 8 + sine[index % 32]);
+        int value = filter_microphone((int)index * 8 + sine[index / 3 % 32]);
         if (index >= 16000)
         {
             filtered_sum += value;
@@ -405,9 +416,42 @@ void validate(void)
             if (magnitude > voice_peak) { voice_peak = magnitude; }
         }
     }
-    CHECK(filtered_sum / 16000 > 450 && filtered_sum / 16000 < 600);
-    CHECK(filtered_abs / 16000 > 5000 && filtered_abs / 16000 < 5400);
-    CHECK(voice_peak > 8000 && voice_peak < 9000);
+    CHECK(filtered_sum / 16000 > 1400 && filtered_sum / 16000 < 1700);
+    CHECK(filtered_abs / 16000 > 5000 && filtered_abs / 16000 < 5500);
+    CHECK(voice_peak > 9400 && voice_peak < 10000);
+    ++tests_passed;
+
+    /* 下采样前低通必须保留直流、抑制会折叠成直流的16kHz信号。
+     * 首段等到 FIR 历史充满后再检查，避免把启动响应当作稳态。 */
+    memset(lowpass_history, 0, sizeof(lowpass_history)); lowpass_position = 0;
+    int coefficient_sum = 0;
+    for (unsigned tap = 0; tap < 31; ++tap) { coefficient_sum += lowpass_coefficients[tap]; }
+    CHECK(coefficient_sum == 32768);
+    for (unsigned index = 0; index < 300; ++index)
+    {
+        int value = filter_downsample(123456, index);
+        if (index >= 31 && index % 3 == 2) { CHECK(value == 123456); }
+        if (index % 3 != 2) { CHECK(value == 0); }
+    }
+    memset(lowpass_history, 0, sizeof(lowpass_history)); lowpass_position = 0;
+    const int high_frequency[] = {0,8660,-8660};
+    for (unsigned index = 0; index < 300; ++index)
+    {
+        int value = filter_downsample(high_frequency[index % 3], index);
+        if (index >= 31 && index % 3 == 2) { CHECK(value >= -5 && value <= 5); }
+    }
+    memset(lowpass_history, 0, sizeof(lowpass_history)); lowpass_position = 0;
+    int lowpass_voice_peak = 0;
+    for (unsigned index = 0; index < 3000; ++index)
+    {
+        int value = filter_downsample(sine[index / 3 % 32], index);
+        if (index >= 31 && index % 3 == 2)
+        {
+            if (value < 0) { value = -value; }
+            if (value > lowpass_voice_peak) { lowpass_voice_peak = value; }
+        }
+    }
+    CHECK(lowpass_voice_peak > 7800 && lowpass_voice_peak < 8400);
     ++tests_passed;
 }
 '''
@@ -426,7 +470,7 @@ def main() -> int:
     source = (ROOT / "src/test/test-audio-replay.c").read_text(encoding="utf-8")
     definitions = source[source.index("#define AUDIO_CLOCK_HZ"):source.index("/* 24 位数据右对齐")]
     functions = "\n".join(extract_function(source, name) for name in (
-        "pcm24_signed", "encode_mulaw", "decode_mulaw", "stop_capture", "mic_callback", "filter_microphone",
+        "pcm24_signed", "encode_mulaw", "decode_mulaw", "stop_capture", "mic_callback", "filter_microphone", "filter_downsample",
         "consume_block", "wait_capture_idle", "close_timer", "capture_audio", "prepare_playback",
         "playback_sample", "audio_tick", "play_audio", "run_test"))
     output = ROOT / "logs/audio-validation"
@@ -450,12 +494,12 @@ def main() -> int:
                    for symbol in elf.get_section_by_name(".symtab").iter_symbols()}
     machine.reg_write(UC_ARM_REG_SP, 0x7FF000)
     machine.reg_write(UC_ARM_REG_LR, 0xFFF01)
-    machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=30000000)
+    machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=60000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 13:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/13")
-    print("PASS: 13 ARM groups; PCM24 high-pass/DC drift + voice preservation, G.711, continuous 5s capture/playback, errors/guards/cleanup")
+    if error or passed != 14:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/14")
+    print("PASS: 14 ARM groups; original BSP 3.077MHz, 48k capture / 16k playback, FIR resampling, high-pass, G.711, 5s duration/errors/guards/cleanup")
     return 0
 
 

@@ -72,19 +72,24 @@ static int mute_output_pins(void)
     return result;
 }
 
-/* GPT1 时钟：120MHz/117；双声道每帧 64 个位时钟。
- * GPT2 使用相同的 117*64 分频，录音与播放均约 16025.64 样本/秒。
- * 80128 帧对应 4.999987 秒，正好分为 626 个 128 帧块。 */
+/* GPT1 恢复原始 BSP 的 120MHz/39，麦克风位时钟约 3.077MHz。
+ * 每帧 64 位，原始采集约 48076.92 帧/秒；低通后每 3 帧保存 1 样本。
+ * GPT2 播放约 16025.64 样本/秒：原始 240384 帧、输出 80128 样本均约 5 秒。 */
 #define AUDIO_CLOCK_HZ 120000000u
-#define AUDIO_CLOCK_PERIOD 117u
-#define AUDIO_SAMPLE_PERIOD (AUDIO_CLOCK_PERIOD * 64u)
+#define AUDIO_CLOCK_PERIOD 39u
+#define AUDIO_DECIMATION 3u
+#define AUDIO_CAPTURE_PERIOD (AUDIO_CLOCK_PERIOD * 64u)
+#define AUDIO_SAMPLE_PERIOD (AUDIO_CAPTURE_PERIOD * AUDIO_DECIMATION)
 #define AUDIO_SECONDS 5u
 #define AUDIO_FRAMES (AUDIO_CLOCK_HZ * AUDIO_SECONDS / AUDIO_SAMPLE_PERIOD)
 #define AUDIO_BLOCK_FRAMES 128u
+#define AUDIO_CAPTURE_FRAMES (AUDIO_FRAMES * AUDIO_DECIMATION)
+#define AUDIO_CAPTURE_BLOCK_FRAMES (AUDIO_BLOCK_FRAMES * AUDIO_DECIMATION)
 #define AUDIO_BLOCK_COUNT (AUDIO_FRAMES / AUDIO_BLOCK_FRAMES)
 #define AUDIO_CHANNELS 2u
-#define AUDIO_BLOCK_BYTES (AUDIO_BLOCK_FRAMES * AUDIO_CHANNELS * sizeof(uint32_t))
+#define AUDIO_BLOCK_BYTES (AUDIO_CAPTURE_BLOCK_FRAMES * AUDIO_CHANNELS * sizeof(uint32_t))
 #define AUDIO_SECOND_FRAMES 16026u
+#define AUDIO_CAPTURE_SECOND_FRAMES 48077u
 #define AUDIO_TIMEOUT_MS 6500u
 #define AUDIO_GUARD 0x51A7C0DEu
 #define AUDIO_PWM_PERIOD 1500u
@@ -96,15 +101,29 @@ static int mute_output_pins(void)
 /* 一阶高通：截止频率约 40Hz，去掉启动后的慢漂移，保留语音频段。
  * 滤波仍使用原始 24 位精度；除以 32 后存储，比直接除以 256 多保留 3 位弱信号。
  * 超过 PCM16 范围的启动瞬态由 mu-law 编码器限幅，不影响 RAM 大小。 */
-#define AUDIO_HIGH_PASS_DIVISOR 64
+#define AUDIO_HIGH_PASS_DIVISOR 192
 #define AUDIO_STORAGE_DIVISOR 32
+#define AUDIO_LOW_PASS_TAPS 31u
+#define AUDIO_LOW_PASS_SCALE 32768
+
+/* 31 点（31 taps）的对称 FIR，Blackman 窗、截止频率约 5kHz。
+ * 系数合计 32768，直流增益为 1；先低通再三抽一，抑制高频折叠到语音频段。
+ * ~48kHz 的输入在 1kHz 增益约 1、8kHz 约 0.017，适合此语音验证例程。 */
+static const int lowpass_coefficients[AUDIO_LOW_PASS_TAPS] =
+{
+    0, 1, 11, 35, 57, 34, -91, -329, -582, -623, -165, 980, 2732, 4685, 6229,
+    6820,
+    6229, 4685, 2732, 980, -165, -623, -582, -329, -91, 34, 57, 35, 11, 1, 0
+};
+static int lowpass_history[AUDIO_LOW_PASS_TAPS];
+static unsigned lowpass_position;
 
 /* DTC 写入当前块时，线程处理上一块；哨兵用于检查 DMA 是否越界。
  * 不在中断内编码或打印。线程若来不及处理，直接报错，避免静默丢块。 */
 struct capture_buffer
 {
     uint32_t before;
-    uint32_t samples[AUDIO_BLOCK_FRAMES * AUDIO_CHANNELS];
+    uint32_t samples[AUDIO_CAPTURE_BLOCK_FRAMES * AUDIO_CHANNELS];
     uint32_t after;
 };
 static struct capture_buffer capture_buffers[2];
@@ -251,7 +270,7 @@ static void mic_callback(i2s_callback_args_t *arguments)
     }
 }
 
-/* y[n] = x[n] - x[n-1] + (63/64)*y[n-1]。
+/* y[n] = x[n] - x[n-1] + (191/192)*y[n-1]。
  * 使用有符号除法，不依赖负数右移；状态跨 DMA 块连续，每次录音重新置零。
  * 常量和慢漂移逐渐衰减，不能把启动的大峰值误当成持续语音。 */
 static int filter_microphone(int input)
@@ -263,18 +282,50 @@ static int filter_microphone(int input)
     return output;
 }
 
+/* 每个原始帧都写入 FIR 环形历史；只有第 3 帧计算并返回低通输出。
+ * 64 位乘加避免 24 位样本与定点系数相乘时溢出；不在中断内执行。
+ * 其他帧返回 0 仅表示不保存，调用方根据 frame%3 判断有效输出。 */
+static int filter_downsample(int input, unsigned frame)
+{
+    unsigned newest = lowpass_position;
+    lowpass_history[newest] = input;
+    ++lowpass_position;
+    if (lowpass_position == AUDIO_LOW_PASS_TAPS)
+    {
+        lowpass_position = 0;
+    }
+    if (frame % AUDIO_DECIMATION != AUDIO_DECIMATION - 1u)
+    {
+        return 0;
+    }
+    int64_t sum = 0;
+    for (unsigned tap = 0; tap < AUDIO_LOW_PASS_TAPS; ++tap)
+    {
+        sum += (int64_t)lowpass_history[newest] * lowpass_coefficients[tap];
+        if (newest == 0)
+        {
+            newest = AUDIO_LOW_PASS_TAPS - 1u;
+        }
+        else
+        {
+            --newest;
+        }
+    }
+    return (int)(sum / AUDIO_LOW_PASS_SCALE);
+}
+
 /* 只在线程中处理已完成块；原始统计与滤波统计都保留，便于定位故障。
  * 高通先于位宽转换和压缩，避免弱信号先被量化成零；采集期间不打印。 */
 static void consume_block(uint8_t *destination, unsigned block)
 {
     const uint32_t *samples = capture_buffers[block % 2u].samples;
-    unsigned first = block * AUDIO_BLOCK_FRAMES;
-    for (unsigned offset = 0; offset < AUDIO_BLOCK_FRAMES; ++offset)
+    unsigned first = block * AUDIO_CAPTURE_BLOCK_FRAMES;
+    for (unsigned offset = 0; offset < AUDIO_CAPTURE_BLOCK_FRAMES; ++offset)
     {
         unsigned frame = first + offset;
         int left = pcm24_signed(samples[offset * AUDIO_CHANNELS]);
         int right = pcm24_signed(samples[offset * AUDIO_CHANNELS + 1u]);
-        struct capture_statistics *statistics = &capture_statistics[frame / AUDIO_SECOND_FRAMES];
+        struct capture_statistics *statistics = &capture_statistics[frame / AUDIO_CAPTURE_SECOND_FRAMES];
         if (left < statistics->minimum)
         {
             statistics->minimum = left;
@@ -316,12 +367,16 @@ static void consume_block(uint8_t *destination, unsigned block)
             magnitude = -magnitude;
         }
         statistics->filtered_absolute_sum += (unsigned)magnitude;
-        int stored = filtered / AUDIO_STORAGE_DIVISOR;
-        if (stored < -32635 || stored > 32635)
+        int lowpass = filter_downsample(filtered, frame);
+        if (frame % AUDIO_DECIMATION == AUDIO_DECIMATION - 1u)
         {
-            ++statistics->storage_clipped;
+            int stored = lowpass / AUDIO_STORAGE_DIVISOR;
+            if (stored < -32635 || stored > 32635)
+            {
+                ++statistics->storage_clipped;
+            }
+            destination[frame / AUDIO_DECIMATION] = (uint8_t)encode_mulaw(stored);
         }
-        destination[frame] = (uint8_t)encode_mulaw(stored);
     }
     /* 全部数据读取完成后再公布 consumed，避免 ISR 提前复用本块。 */
     __DMB();
@@ -363,7 +418,7 @@ static int close_timer(const char *label, gpt_instance_ctrl_t *control)
 }
 
 /* 录音期间扬声器保持静音。与独立 audio-mic 相同，从启动后的第一帧采集。
- * 所有 80128 帧连续保存，5 秒完成后关闭 SSI/DTC/GPT1，再进入回放。 */
+ * 240384 原始帧连续采集，低通降采样为 80128 样本；关闭采集硬件后再回放。 */
 static int capture_audio(uint8_t *destination)
 {
     timer_cfg_t clock_config = g_timer_cfg;
@@ -384,6 +439,8 @@ static int capture_audio(uint8_t *destination)
     capture_finished_at = 0;
     filter_previous_input = 0;
     filter_previous_output = 0;
+    memset(lowpass_history, 0, sizeof(lowpass_history));
+    lowpass_position = 0;
     memset(capture_statistics, 0, sizeof(capture_statistics));
     for (unsigned index = 0; index < AUDIO_SECONDS; ++index)
     {
@@ -429,9 +486,12 @@ static int capture_audio(uint8_t *destination)
         rt_kprintf("MIC SSI open error=%d\n", error);
         goto clock_close;
     }
+    rt_kprintf("MIC BCLK=%u Hz rate~48077; GPT1 period=%u (original BSP clock)\n",
+               AUDIO_CLOCK_HZ / AUDIO_CLOCK_PERIOD, AUDIO_CLOCK_PERIOD);
     rt_kprintf("MIC PCM24 slot32; %u frames, %u blocks of %u frames; output mono mu-law\n",
-               AUDIO_FRAMES, AUDIO_BLOCK_COUNT, AUDIO_BLOCK_FRAMES);
+               AUDIO_CAPTURE_FRAMES, AUDIO_BLOCK_COUNT, AUDIO_CAPTURE_BLOCK_FRAMES);
     rt_kprintf("MIC filter: high-pass ~40Hz at PCM24; storage divisor=%d\n", AUDIO_STORAGE_DIVISOR);
+    rt_kprintf("MIC resample: FIR 31 taps ~5kHz; 3 input frames -> 1 stored sample\n");
     rt_kprintf("MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE\n");
     start = rt_tick_get();
     capture_running = 1;
@@ -492,7 +552,7 @@ static int capture_audio(uint8_t *destination)
         result = -RT_ERROR;
     }
     rt_kprintf("MIC RECORD DONE: frames=%u/%u blocks=%u/%u elapsed=%u ms\n",
-               capture_consumed * AUDIO_BLOCK_FRAMES, AUDIO_FRAMES,
+               capture_consumed * AUDIO_CAPTURE_BLOCK_FRAMES, AUDIO_CAPTURE_FRAMES,
                capture_completed, AUDIO_BLOCK_COUNT,
                elapsed_ms);
     rt_kprintf("MIC errors: read=%d overrun=%u early_idle=%u stop=%d idle=%u result=%d\n",
@@ -755,7 +815,7 @@ static int run_test(void)
     uint32_t *tail = (uint32_t *)(samples + AUDIO_FRAMES);
     allocation[0] = AUDIO_GUARD;
     *tail = AUDIO_GUARD;
-    rt_kprintf("REPLAY v5: independent MIC 5s -> recorded playback 5s; PCM24 high-pass / mu-law\n");
+    rt_kprintf("REPLAY v6: independent MIC 5s at ~48k -> playback 5s at ~16k; original BSP clock\n");
     for (unsigned seconds = 3; seconds > 0; --seconds)
     {
         rt_kprintf("MIC recording starts in %u...\n", seconds);

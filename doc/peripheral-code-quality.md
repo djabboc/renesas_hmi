@@ -110,7 +110,7 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 
 歌曲例程另有 `scripts/validate_audio_song.py`：提取实际 PWM 回调、初始化和清理函数执行 5 组 ARM 模拟检查，包括 EOF、完成、取消/超时、错误注入和关闭顺序。长 PCM 数组位于 `test-audio-song.c` 末尾，转换脚本只更新两对生成标记内的数据；手写硬件逻辑留在文件前部。当前共有 46 个独立例程，详细说明见 `audio-song.md`。
 
-`scripts/validate_audio_replay.py`提取当前v5五秒版真实C函数，以Studio ARM GCC编译并在ARM模拟器执行13组检查。覆盖高通直流衰减/慢漂移叠加约500Hz信号的幅度保留、G.711向量/码字往返、24位符号、626块全部80128帧滤波内容与顺序、5秒采集/播放、阶段互斥、取消、超时/提前IDLE/溢出/Read和启动失败清理、守护字、内存错误及弱信号增益/限幅/淡入淡出。FSP桩不能替代实物SSI连续性和语音试听；12组为历史v4，19组为历史v3，当前操作见 `audio-replay.md`。
+`scripts/validate_audio_replay.py`提取当前v6真实C函数，以Studio ARM GCC编译并在ARM模拟器执行14组检查。覆盖原始BSP时钟39分频、240384原始帧到80128保存样本（独立移位历史对照实际环形FIR）、FIR直流/500Hz保留/16kHz混叠抑制、高通直流/慢漂移、G.711/24位符号、5秒采集/播放、阶段互斥、取消/超时/提前IDLE/溢出/Read与启动失败、哨兵及幅度边界。FSP桩不能代替实物I²S时序与语音试听；13组为历史v5，12组v4、19组v3，当前操作见 `audio-replay.md`。
 
 ```powershell
 python scripts/validate_audio_replay.py --dependencies logs/oled-validation/python
