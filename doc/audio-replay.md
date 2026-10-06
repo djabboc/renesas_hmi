@@ -1,6 +1,6 @@
 # 录音回放逐步排查：audio-replay
 
-日期：2026-10-06。状态：用户恢复测试，诊断版 v1 已自测、编译、烧录，待实物日志与试听。之前旧版回放没有听到自己的声音，未通过验收。默认歌曲 `audio-song` 和提示音已经通过试听，因此先集中检查录音数据，同时验证回放例程自己的输出路径。
+日期：2026-10-06。状态：诊断版 v1 安静基线已完成，前后参考音正常，中间无声；待同一固件持续发声对照。之前旧版回放没有听到自己的声音，未通过验收。默认歌曲 `audio-song` 和提示音已经通过试听，因此先集中检查录音数据，同时验证回放例程自己的输出路径。
 
 ## 第一轮：安静基线
 
@@ -68,3 +68,101 @@ hmi_test audio-replay
 Studio 构建：0 errors、0 warnings；Flash1156532字节、静态RAM529480字节，构建日志 `logs/audio-replay-diagnostic-build.log`。与默认歌曲验收版本相比，静态RAM增加64字节；采集堆缓冲只增加8字节哨兵。
 
 DAP-LINK/PyOCD 已成功烧录并复位，实际编程1156624字节，日志 `logs/audio-replay-diagnostic-flash.log`。本轮没有自动运行录音命令或占用COM8。
+
+## 第一轮实物记录：安静基线（2026-10-06）
+
+固件 `2ac8265`。用户确认：前、后两个参考音都正常，中间回放无声。
+
+接收1023ms完成、CPU尾部剩余0、DTC剩余块0、无提前IDLE、哨兵完整、填充值残留0；左右声道中只有左声道变化。前后参考音使用同一RAM/PWM路径，均8192/8192、pwm_error=0、duty_A=682..818，且用户听音正常。这支持继续优先检查录音数据和处理，不代表任意录音已经正确。
+
+第一窗口的左声道最大32763、均值8703，后三窗口均值分别-3145、-2432、-1258，存在明显的开头大幅变化和后续漂移，疑似启动/稳定过程。整段峰值32297把增益压到23/256，约0.09倍；处理后平均绝对幅度377，比参考音1866明显小。峰值受启动异常影响是当前线索，不能凭这轮安静数据唯一确定原因。安静时无声也不能直接判录音失败，下一轮保持代码和音量不变，持续发声比较。
+
+用户原始日志：
+
+补充：`MIC DTC access=2 bytes block=514` 中的514是驱动改写后的原始length字段，即0x0202；`r_dtc.c` 将块/重复模式的长度2同时写入CRAH和CRAL。它不是每块514个样本，也不表示传输错误。`DTC end remaining_length=2` 是API提取的CRAL，配合remaining_blocks=0、CPU剩余0和完成回调解释。
+
+```text
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >REPLAY diagnostic v1: REF-BEFORE -> countdown -> capture -> inspect -> replay -> REF-AFTER
+REPLAY stage 1: reference beep BEFORE; remember whether you hear it
+PCM REF-BEFORE n=8192 min=-3000 max=3000 mean=0 ac_peak=3000
+PCM REF-BEFORE mean_abs_ac=1866 zero=513 changed=8190 clipped=0
+AUDIO REF-BEFORE start: frames=8192 GPT2_period=7488 PWM_period=1500
+AUDIO REF-BEFORE output samples=8192/8192 pwm_error=0 result=1
+AUDIO REF-BEFORE duty_A=682..818 active_duty_samples=7673 elapsed=518 ms
+REPLAY stage 2: keep quiet for baseline OR sustain AH during recording
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC config: PCM=16 slot=32 channels=2 bytes=65536 expected=1022ms
+MIC clocks: PCLKD=120000000 GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz
+MIC SSI opened: SSICR=400B4000 SSIFCR=80000000 FIFO_access=2 bytes RX_IRQ=38
+MIC DTC access=2 bytes block=514 src=4004E01C
+MIC RECORD NOW: keep quiet OR sustain AH for this entire 1 second
+MIC receive: result=0 complete=1 rx_events=2 early_idle=0
+MIC receive: elapsed=1023 ms remaining_CPU_words=0
+MIC SSI end: SSICR=440B4001 SSISR=00000000 SSIFSR=00010901
+MIC DTC end: remaining_blocks=0 remaining_length=2
+MIC SSI closed: idle_events=1 result=0
+MIC buffer guards MATCH
+MIC recording finished; stop speaking. REPLAY stage 3: inspect L/R and prepare
+MIC buffer fill_A5A5=0/32768 (large count suggests incomplete reception)
+PCM RAW-L n=16384 min=-3381 max=32763 mean=466 ac_peak=32297
+PCM RAW-L mean_abs_ac=4341 zero=10 changed=14500 clipped=1
+PCM RAW-R n=16384 min=0 max=0 mean=0 ac_peak=0
+PCM RAW-R mean_abs_ac=0 zero=16384 changed=0 clipped=0
+MIC window=0 frames=0..4095 (~256ms)
+PCM WIN-L n=4096 min=-2231 max=32763 mean=8703 ac_peak=24060
+PCM WIN-L mean_abs_ac=8986 zero=10 changed=3974 clipped=1
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=0 L=0000/0 R=0000/0
+MIC raw frame=1 L=0000/0 R=0000/0
+MIC raw frame=2 L=0000/0 R=0000/0
+MIC window=1 frames=4096..8191 (~256ms)
+PCM WIN-L n=4096 min=-3381 max=-2224 mean=-3145 ac_peak=921
+PCM WIN-L mean_abs_ac=204 zero=0 changed=3676 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=4096 L=F74E/-2226 R=0000/0
+MIC raw frame=4097 L=F750/-2224 R=0000/0
+MIC raw frame=4098 L=F749/-2231 R=0000/0
+MIC window=2 frames=8192..12287 (~256ms)
+PCM WIN-L n=4096 min=-3094 max=-1774 mean=-2432 ac_peak=662
+PCM WIN-L mean_abs_ac=349 zero=0 changed=3460 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=8192 L=F3EA/-3094 R=0000/0
+MIC raw frame=8193 L=F3F1/-3087 R=0000/0
+MIC raw frame=8194 L=F3F0/-3088 R=0000/0
+MIC window=3 frames=12288..16383 (~256ms)
+PCM WIN-L n=4096 min=-1777 max=-843 mean=-1258 ac_peak=519
+PCM WIN-L mean_abs_ac=220 zero=0 changed=3387 clipped=0
+PCM WIN-R n=4096 min=0 max=0 mean=0 ac_peak=0
+PCM WIN-R mean_abs_ac=0 zero=4096 changed=0 clipped=0
+MIC raw frame=12288 L=F913/-1773 R=0000/0
+MIC raw frame=12289 L=F912/-1774 R=0000/0
+MIC raw frame=12290 L=F913/-1773 R=0000/0
+MIC DMA complete: frames=16384 min=-3381 max=32763 mean=466 ac_peak=32297
+MIC DMA complete: changed=14500 clipped=1
+AUDIO prepared: gain_q8=23 (256=1x) output_peak=2588 limited=0
+PCM PREPARED-L n=16384 min=-345 max=2588 mean=-6 ac_peak=2594
+PCM PREPARED-L mean_abs_ac=377 zero=12 changed=5336 clipped=0
+AUDIO gain reason: target_peak=3000 max_gain=8x; use WIN-L stats to check startup outliers
+REPLAY stage 4: AUDIO REPLAY NOW (recorded LEFT channel)
+PCM RECORDED-L n=16384 min=-345 max=2588 mean=-6 ac_peak=2594
+PCM RECORDED-L mean_abs_ac=377 zero=12 changed=5336 clipped=0
+AUDIO RECORDED-L start: frames=16384 GPT2_period=7488 PWM_period=1500
+AUDIO RECORDED-L output samples=16384/16384 pwm_error=0 result=1
+AUDIO RECORDED-L duty_A=743..809 active_duty_samples=16001 elapsed=1030 ms
+REPLAY stage 5: reference beep AFTER; compare with the first beep
+PCM REF-AFTER n=8192 min=-3000 max=3000 mean=0 ac_peak=3000
+PCM REF-AFTER mean_abs_ac=1866 zero=513 changed=8190 clipped=0
+AUDIO REF-AFTER start: frames=8192 GPT2_period=7488 PWM_period=1500
+AUDIO REF-AFTER output samples=8192/8192 pwm_error=0 result=1
+AUDIO REF-AFTER duty_A=682..818 active_duty_samples=7673 elapsed=518 ms
+REPLAY diagnostic finished result=1; report both beeps AND recorded voice
+TEST RESULT audio-replay WAIT code=1 elapsed=8241 ms
+TEST IDLE
+```
