@@ -95,7 +95,7 @@ hmi_test can-bus
 
 ## P04/P05 音频：采集 → 输出 → 回放
 
-源码：`src/test/test-audio-mic.c`、`test-audio-tone.c`、`test-audio-replay.c`。数字麦克风在 I²S 左声道。`audio-mic` 使用 24 位右对齐数据并显式符号扩展；当前v4 `audio-replay` 使用24位右对齐接收/32位时隙，独立连续录80128帧约5秒；左声道转PCM16并编码mu-law保存在RAM，关闭麦克风后回放5秒。
+源码：`src/test/test-audio-mic.c`、`test-audio-tone.c`、`test-audio-replay.c`。数字麦克风在 I²S 左声道。`audio-mic` 使用 24 位右对齐数据并显式符号扩展；当前v5 `audio-replay` 使用24位右对齐接收/32位时隙，独立连续录80128帧约5秒；左声道先执行约40Hz高通，再除以32编码mu-law保存在RAM，关闭麦克风后回放5秒。
 
 扬声器接板背面标有 `SPEAKER` 的白色 2 针插座，不是 3.5mm 耳机孔。按仓库背面图的方向看，该插座在右侧边缘、绿色 CAN 端子下方、RJ45 网口上方，紧邻 MIC。下图红框标出插座：原图来自本工程 `docs/picture/back.png`，在初始化提交 `11cfc7a` 中已存在；助手只裁剪并添加红框，没有生成板卡图像。
 
@@ -127,7 +127,7 @@ hmi_test audio-song
 
 扬声器接口是本地 PWM 音频，不代表 RW007 支持 A2DP；已取消的 ble-sound 不在本轮重新实施。
 
-2026-10-06 提示音与歌曲已通过试听，回放v1/v2/v3均未通过语音试听；用户随后要求重新生成5秒录音/5秒回放例程，当前为v4。独立audio-mic仍保留原版本，助手不占用COM8，等待五秒版实物日志与试听。
+2026-10-06 提示音与歌曲已通过试听，回放v1/v2/v3/v4均未通过语音试听；v4实测录5秒/回放5秒且帧数完整，但用户持续说话仍无声。当前v5增加PCM24高通和逐秒HP24幅度日志，减少慢漂移对增益的影响，等待语音复验。独立audio-mic保留原版本，助手不占用COM8。
 
 ## P06 USB Device：枚举 → 二进制 ECHO
 

@@ -2,11 +2,17 @@
 
 当前交付结构为 `src/test-main.c` + `src/test/` 下 46 个独立 C 文件；`src/hal_entry.c` 与重构前逐字节一致。以下是本轮新固件自测，后面的原始记录保留为历史证据，不自动等同于重构后的人工验收。
 
-## 五秒录音/五秒回放重新生成：v4软件交付（2026-10-06）
+## 五秒回放v4实测失败与v5高通处理（2026-10-06）
+
+用户确认全程持续说话但回放仍无声。v4采集80128/80128帧、626/626块，5000ms；输出80128/80128样本，5001ms，read/overrun/early_idle/stop/pwm_error均0，13241ms后WAIT/IDLE。第二秒原始均值-93577，后续逐渐趋近0；全局减均值不能移除慢漂移，gain_q8=875约3.42倍，limited=15219约19.0%。完整日志见 `audio-replay.md`，不记为人声采集成功。
+
+v5保持独立录5秒/后回放5秒，先以PCM24约40Hz高通消除慢漂移，再除以32压缩为mu-law，多保留3位弱信号。打印每秒HP24 min/max/mean_abs/storage_clipped；待安静/说话对照和听感确认，尚不能证明物理麦克风问题解决。13组ARM检查与30项主机检查通过，包含直流衰减、约500Hz语音信号叠加漂移的幅度保留，以及原有完整采集/回放/错误清理。Studio编译0 errors/0 warnings，Flash1155332字节、静态RAM531848字节；DAP-LINK/PyOCD成功烧录1155344字节、退出码0，记录 `logs/audio-replay-highpass-*.log`；不打开COM8。
+
+## 五秒录音/五秒回放重新生成：v4软件交付历史（2026-10-06）
 
 用户要求替换之前诊断流程，重写test-audio-replay：独立连续采集5秒，停止SSI/DTC/GPT1，再回放同一段完整录音5秒。24位PCM/32位时隙/原帧率约16025.64Hz，80128帧理论4.999987秒；双缓冲128帧/块，共626块，mu-law编码保存80128字节，堆申请80136字节含哨兵，两个DTC缓冲静态2064字节。逐秒原始统计用于区分启动段；回放用后4秒估计幅度、全5秒均回放，最大64倍增益、限幅±3000。保留单C/唯一线程入口，不改其他例程或hal_entry，不占用COM8。
 
-12组实际C函数ARM模拟检查通过，验证全部帧内容与顺序、连续5秒采集/5秒播放及互斥阶段、G.711/符号扩展、取消/超时/溢出/提前IDLE/读与启动错误/守护字/内存失败/幅度边界和清理；30项主机结构/工具回归通过。记录 `logs/audio-replay-5s-arm.log`、`logs/audio-replay-5s-host-tests.log`、`logs/audio-replay-5s-build.log`、`logs/audio-replay-5s-flash.log`；Studio编译0 errors/0 warnings，Flash1154804字节、静态RAM531720字节；DAP-LINK/PyOCD成功烧录1154832字节、退出码0。软件模拟不证明板端DMA连续性或听到正确人声，五秒版待用户验收。
+12组实际C函数ARM模拟检查通过，验证全部帧内容与顺序、连续5秒采集/5秒播放及互斥阶段、G.711/符号扩展、取消/超时/溢出/提前IDLE/读与启动错误/守护字/内存失败/幅度边界和清理；30项主机结构/工具回归通过。记录 `logs/audio-replay-5s-arm.log`、`logs/audio-replay-5s-host-tests.log`、`logs/audio-replay-5s-build.log`、`logs/audio-replay-5s-flash.log`；Studio编译0 errors/0 warnings，Flash1154804字节、静态RAM531720字节；DAP-LINK/PyOCD成功烧录1154832字节、退出码0。后续板测计时与帧数完成，但持续说话回放无声，见上方v5排查记录。
 
 ## 独立麦克风复测与v3回放日志归档（2026-10-06）
 

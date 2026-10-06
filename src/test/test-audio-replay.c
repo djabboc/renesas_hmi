@@ -3,7 +3,7 @@
  * @file test-audio-replay.c
  * @brief 独立录音 5 秒，再通过 J8 喇叭回放同一段录音 5 秒。
  *
- * SSI/DTC 连续采集 24 位双声道；线程提取左声道并编码为 G.711 mu-law。
+ * SSI/DTC 连续采集 24 位双声道；线程提取左声道、去掉慢漂移，再编码为 mu-law。
  * 每样本存 1 字节，使 5 秒录音能放入现有堆；回放时还原为 PCM16。
  * 一个线程完成倒计时、采集、回放和清理，不调用其他测试文件。
  * 阅读顺序：线程入口 → run_test → capture_audio / play_audio → 中断回调。
@@ -93,6 +93,11 @@ static int mute_output_pins(void)
 #define AUDIO_GAIN_SCALE 256
 #define AUDIO_MAX_GAIN (64 * AUDIO_GAIN_SCALE)
 #define AUDIO_FADE_FRAMES 160u
+/* 一阶高通：截止频率约 40Hz，去掉启动后的慢漂移，保留语音频段。
+ * 滤波仍使用原始 24 位精度；除以 32 后存储，比直接除以 256 多保留 3 位弱信号。
+ * 超过 PCM16 范围的启动瞬态由 mu-law 编码器限幅，不影响 RAM 大小。 */
+#define AUDIO_HIGH_PASS_DIVISOR 64
+#define AUDIO_STORAGE_DIVISOR 32
 
 /* DTC 写入当前块时，线程处理上一块；哨兵用于检查 DMA 是否越界。
  * 不在中断内编码或打印。线程若来不及处理，直接报错，避免静默丢块。 */
@@ -115,8 +120,14 @@ struct capture_statistics
     unsigned changed;
     unsigned near_full;
     unsigned right_peak;
+    int filtered_minimum;
+    int filtered_maximum;
+    uint64_t filtered_absolute_sum;
+    unsigned storage_clipped;
 };
 static struct capture_statistics capture_statistics[AUDIO_SECONDS];
+static int filter_previous_input;
+static int filter_previous_output;
 static volatile unsigned capture_completed;
 static volatile unsigned capture_consumed;
 static volatile unsigned capture_running;
@@ -240,8 +251,20 @@ static void mic_callback(i2s_callback_args_t *arguments)
     }
 }
 
-/* 只在线程中处理已完成块；转换前先统计原始值，不掩盖启动段。
- * 用有符号除法把 24 位数据转 PCM16，再编码；低 8 位舍弃，向零取整。 */
+/* y[n] = x[n] - x[n-1] + (63/64)*y[n-1]。
+ * 使用有符号除法，不依赖负数右移；状态跨 DMA 块连续，每次录音重新置零。
+ * 常量和慢漂移逐渐衰减，不能把启动的大峰值误当成持续语音。 */
+static int filter_microphone(int input)
+{
+    int output = input - filter_previous_input + filter_previous_output;
+    output -= filter_previous_output / AUDIO_HIGH_PASS_DIVISOR;
+    filter_previous_input = input;
+    filter_previous_output = output;
+    return output;
+}
+
+/* 只在线程中处理已完成块；原始统计与滤波统计都保留，便于定位故障。
+ * 高通先于位宽转换和压缩，避免弱信号先被量化成零；采集期间不打印。 */
 static void consume_block(uint8_t *destination, unsigned block)
 {
     const uint32_t *samples = capture_buffers[block % 2u].samples;
@@ -278,7 +301,27 @@ static void consume_block(uint8_t *destination, unsigned block)
         {
             statistics->right_peak = (unsigned)right;
         }
-        destination[frame] = (uint8_t)encode_mulaw(left / 256);
+        int filtered = filter_microphone(left);
+        if (filtered < statistics->filtered_minimum)
+        {
+            statistics->filtered_minimum = filtered;
+        }
+        if (filtered > statistics->filtered_maximum)
+        {
+            statistics->filtered_maximum = filtered;
+        }
+        int magnitude = filtered;
+        if (magnitude < 0)
+        {
+            magnitude = -magnitude;
+        }
+        statistics->filtered_absolute_sum += (unsigned)magnitude;
+        int stored = filtered / AUDIO_STORAGE_DIVISOR;
+        if (stored < -32635 || stored > 32635)
+        {
+            ++statistics->storage_clipped;
+        }
+        destination[frame] = (uint8_t)encode_mulaw(stored);
     }
     /* 全部数据读取完成后再公布 consumed，避免 ISR 提前复用本块。 */
     __DMB();
@@ -339,11 +382,15 @@ static int capture_audio(uint8_t *destination)
     capture_read_error = FSP_SUCCESS;
     capture_stop_error = FSP_SUCCESS;
     capture_finished_at = 0;
+    filter_previous_input = 0;
+    filter_previous_output = 0;
     memset(capture_statistics, 0, sizeof(capture_statistics));
     for (unsigned index = 0; index < AUDIO_SECONDS; ++index)
     {
         capture_statistics[index].minimum = 8388607;
         capture_statistics[index].maximum = -8388608;
+        capture_statistics[index].filtered_minimum = INT32_MAX;
+        capture_statistics[index].filtered_maximum = INT32_MIN;
     }
     for (unsigned index = 0; index < 2; ++index)
     {
@@ -384,6 +431,7 @@ static int capture_audio(uint8_t *destination)
     }
     rt_kprintf("MIC PCM24 slot32; %u frames, %u blocks of %u frames; output mono mu-law\n",
                AUDIO_FRAMES, AUDIO_BLOCK_COUNT, AUDIO_BLOCK_FRAMES);
+    rt_kprintf("MIC filter: high-pass ~40Hz at PCM24; storage divisor=%d\n", AUDIO_STORAGE_DIVISOR);
     rt_kprintf("MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE\n");
     start = rt_tick_get();
     capture_running = 1;
@@ -467,8 +515,8 @@ clock_close:
     return result;
 }
 
-/* 先打印逐秒原始统计，再计算播放幅度。所有帧都保存并回放，不丢弃启动段。
- * 用后 4 秒估计直流与交流峰值，避免启动尖峰把其余录音压到接近无声。
+/* 先打印逐秒原始及滤波统计，再计算播放幅度。全部 5 秒保留，不丢弃启动段。
+ * 用后 4 秒的高通信号估计播放峰值，避免慢漂移压低真正的语音。
  * 增益最多 64 倍，最终峰值仍限在参考音曾验收过的 3000，底噪也可能放大。 */
 static void prepare_playback(const uint8_t *samples)
 {
@@ -480,6 +528,10 @@ static void prepare_playback(const uint8_t *samples)
                    second + 1u, statistics->frames, statistics->minimum, statistics->maximum, mean);
         rt_kprintf("MIC second=%u changed_in_blocks=%u near_full=%u R24_peak=%u\n",
                    second + 1u, statistics->changed, statistics->near_full, statistics->right_peak);
+        unsigned mean_absolute = (unsigned)(statistics->filtered_absolute_sum / statistics->frames);
+        rt_kprintf("MIC HP24 second=%u min=%d max=%d mean_abs=%u storage_clipped=%u\n",
+                   second + 1u, statistics->filtered_minimum, statistics->filtered_maximum,
+                   mean_absolute, statistics->storage_clipped);
     }
     int64_t sum = 0;
     for (unsigned index = AUDIO_SECOND_FRAMES; index < AUDIO_FRAMES; ++index)
@@ -703,7 +755,7 @@ static int run_test(void)
     uint32_t *tail = (uint32_t *)(samples + AUDIO_FRAMES);
     allocation[0] = AUDIO_GUARD;
     *tail = AUDIO_GUARD;
-    rt_kprintf("REPLAY v4: independent MIC 5s -> recorded playback 5s; RAM mu-law\n");
+    rt_kprintf("REPLAY v5: independent MIC 5s -> recorded playback 5s; PCM24 high-pass / mu-law\n");
     for (unsigned seconds = 3; seconds > 0; --seconds)
     {
         rt_kprintf("MIC recording starts in %u...\n", seconds);

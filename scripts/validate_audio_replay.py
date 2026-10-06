@@ -270,10 +270,16 @@ void validate(void)
     CHECK(capture_completed == 626 && capture_consumed == 626 && ssi_reads == 626);
     CHECK(ssi_stops == 1 && ssi_closes == 1 && capture_overruns == 0 && capture_early_idle == 0);
     CHECK(absolute_frame == AUDIO_FRAMES && clock_ms >= 5000 && clock_ms <= 5002 && hardware_closed());
+    int previous_input = 0;
+    int previous_output = 0;
     for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
     {
-        unsigned expected = encode_mulaw(1024);
-        if (index % 32 >= 16) { expected = encode_mulaw(-1024); }
+        int input = 262144;
+        if (index % 32 >= 16) { input = -262144; }
+        int filtered = input - previous_input + previous_output - previous_output / 64;
+        previous_input = input;
+        previous_output = filtered;
+        unsigned expected = encode_mulaw(filtered / 32);
         CHECK(samples[index] == expected); /* 全部帧顺序一致，不能重复或漏掉某个块。 */
     }
     unsigned total = 0;
@@ -291,7 +297,16 @@ void validate(void)
     CHECK(playback_position == AUDIO_FRAMES && clock_ms - started >= 4999 && clock_ms - started <= 5002);
     CHECK(playback_duty_min >= 682 && playback_duty_max <= 818 && !recording && hardware_closed());
     CHECK(close_order[0] == 1 && close_order[1] == 2 && close_order[2] == 6);
-    CHECK(playback_limited == 0 && overlap == 0);
+    CHECK(playback_limited < AUDIO_SECOND_FRAMES / 10 && overlap == 0);
+    recording = samples;
+    unsigned limited_before = playback_limited;
+    for (unsigned index = AUDIO_SECOND_FRAMES; index < AUDIO_FRAMES; ++index)
+    {
+        int value = playback_sample(index);
+        CHECK(value >= -AUDIO_OUTPUT_LIMIT && value <= AUDIO_OUTPUT_LIMIT);
+    }
+    CHECK(playback_limited == limited_before); /* 启动以后的稳态信号无需限幅。 */
+    recording = NULL;
     ++tests_passed;
 
     reset(); CHECK(run_test() == TEST_WAIT);
@@ -363,6 +378,37 @@ void validate(void)
     CHECK(playback_sample(320) == AUDIO_OUTPUT_LIMIT && playback_limited > 0);
     CHECK(max_log_bytes < 126);
     ++tests_passed;
+
+    /* 启动直流应衰减；500Hz附近的语音信号应保留。
+     * 输入为慢漂移叠加正弦，使用独立的幅度/平均值指标验证滤波目的。 */
+    filter_previous_input = 0; filter_previous_output = 0;
+    CHECK(filter_microphone(8388607) == 8388607);
+    int filtered_dc = 0;
+    for (unsigned index = 0; index < 16026; ++index) { filtered_dc = filter_microphone(8388607); }
+    CHECK(filtered_dc >= 0 && filtered_dc < 64);
+    const int sine[] = {0,1598,3135,4551,5793,6811,7568,8035,
+                        8192,8035,7568,6811,5793,4551,3135,1598,
+                        0,-1598,-3135,-4551,-5793,-6811,-7568,-8035,
+                        -8192,-8035,-7568,-6811,-5793,-4551,-3135,-1598};
+    filter_previous_input = 0; filter_previous_output = 0;
+    int64_t filtered_sum = 0; uint64_t filtered_abs = 0;
+    int voice_peak = 0;
+    for (unsigned index = 0; index < 32000; ++index)
+    {
+        int value = filter_microphone((int)index * 8 + sine[index % 32]);
+        if (index >= 16000)
+        {
+            filtered_sum += value;
+            int magnitude = value;
+            if (magnitude < 0) { magnitude = -magnitude; }
+            filtered_abs += magnitude;
+            if (magnitude > voice_peak) { voice_peak = magnitude; }
+        }
+    }
+    CHECK(filtered_sum / 16000 > 450 && filtered_sum / 16000 < 600);
+    CHECK(filtered_abs / 16000 > 5000 && filtered_abs / 16000 < 5400);
+    CHECK(voice_peak > 8000 && voice_peak < 9000);
+    ++tests_passed;
 }
 '''
 
@@ -380,7 +426,7 @@ def main() -> int:
     source = (ROOT / "src/test/test-audio-replay.c").read_text(encoding="utf-8")
     definitions = source[source.index("#define AUDIO_CLOCK_HZ"):source.index("/* 24 位数据右对齐")]
     functions = "\n".join(extract_function(source, name) for name in (
-        "pcm24_signed", "encode_mulaw", "decode_mulaw", "stop_capture", "mic_callback",
+        "pcm24_signed", "encode_mulaw", "decode_mulaw", "stop_capture", "mic_callback", "filter_microphone",
         "consume_block", "wait_capture_idle", "close_timer", "capture_audio", "prepare_playback",
         "playback_sample", "audio_tick", "play_audio", "run_test"))
     output = ROOT / "logs/audio-validation"
@@ -407,9 +453,9 @@ def main() -> int:
     machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=30000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 12:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/12")
-    print("PASS: 12 ARM groups; G.711/PCM24, continuous 5s capture + 5s playback, FIFO ownership, cancellation/errors/guards/cleanup")
+    if error or passed != 13:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/13")
+    print("PASS: 13 ARM groups; PCM24 high-pass/DC drift + voice preservation, G.711, continuous 5s capture/playback, errors/guards/cleanup")
     return 0
 
 

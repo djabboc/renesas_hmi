@@ -11,7 +11,7 @@
 - [ ] 断电后将喇叭两线接在 J8 两针之间，检查无短路。两针都是桥臂输出，不接地、不外加电源、不连接 CANH/CANL。
 - [x] `hmi_test audio-tone`：8000/8000 样本，509 ms，用户确认有声且正常，低幅提示音验收通过。
 - [x] `hmi_test audio-song`：用户确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，默认歌曲播放验收通过；日志见 `audio-song.md` 和 `peripheral-test-results.md`。
-- [ ] `hmi_test audio-replay`：v1/v2/v3语音回放未验收，独立audio-mic复测采集PASS但启动瞬态尚未排除。按用户新要求重写v4为连续独立录5秒、关闭采集后回放同一段5秒；12组ARM模拟和30项主机回归检查通过，等待五秒版实物日志与连续语音试听，见 `audio-replay.md`。
+- [ ] `hmi_test audio-replay`：v1/v2/v3/v4均未通过语音试听；v4实测录音5000ms/回放5001ms、80128帧完整且无传输错误，用户持续说话仍无声。v5增加PCM24约40Hz高通，降低慢漂移对播放增益的影响，并保留弱信号与逐秒HP24统计；13组ARM模拟和30项主机检查通过，仍待语音复验，见 `audio-replay.md`。
 - [x] 将提示音与歌曲日志、人工试听结论补入 `peripheral-test-results.md`；录音回放已恢复排查，继续保留未验收状态。
 
 接口位置、针脚和电路依据见 `peripheral-tests.md` 的音频章节。麦克风采样及基本安静/发声对照已完成；低幅扬声器提示音和默认歌曲已通过人工试听，录音回放诊断版待用户复测。

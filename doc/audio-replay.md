@@ -1,8 +1,8 @@
 # 录音回放逐步排查：audio-replay
 
-日期：2026-10-06。当前为重新生成的v4：独立连续麦克风采集5秒，关闭采集硬件，再回放同一段录音5秒。用户要求取代之前半秒诊断流程；v1/v2/v3及独立audio-mic的原始日志保留在下方，回放仍待人工验收。
+日期：2026-10-06。当前为v5：独立连续麦克风采集5秒，关闭采集硬件，再回放同一段录音5秒。v4板端完整采集/输出但用户持续发声仍听不到回放；v5增加原始24位高通，消除慢漂移对播放增益的影响。各历史版本及独立audio-mic日志保留在下方，语音回放仍待人工验收。
 
-## 当前 v4：录音5秒、回放5秒
+## 当前 v5：录音5秒、回放5秒
 
 J8沿用已连接的JBL 4Ω C11R。执行：
 
@@ -22,7 +22,9 @@ hmi_test audio-replay
 
 SSI保持独立audio-mic的24位PCM、32位时隙、4字节FIFO/DTC，每帧两声道。GPT1时钟120MHz/117，双声道每帧64个时钟，帧率约16025.64Hz；保存80128帧，理论4.999987秒。GPT2播放使用7488计数的相同样本率，回放同样80128帧，理论时长相同。
 
-原始五秒双声道需要641024字节，PCM16单声道也需要160256字节，超出现有空闲堆。本版本逐块提取左声道，除以256转换PCM16，再使用G.711 mu-law保存：每样本1字节，共80128字节。它是有损语音编码，保留小幅信号的细量化，不是MP3，不依赖SD卡。录音存储含前后哨兵的堆申请为80136字节；DTC的两个128帧缓冲另占2064字节静态RAM含哨兵。
+原始五秒双声道需要641024字节，PCM16单声道也需要160256字节，超出现有空闲堆。本版本逐块提取左声道，在24位精度执行约40Hz一阶高通，然后除以32转换并用G.711 mu-law保存：每样本1字节，共80128字节。相比v4除以256，多保留3位弱信号；编码时限幅到±32635，逐秒统计storage_clipped。它是有损语音编码，不是MP3，不依赖SD卡。录音存储含前后哨兵的堆申请为80136字节；DTC的两个128帧缓冲另占2064字节静态RAM含哨兵。
+
+高通递推为 `y[n] = x[n] - x[n-1] + (63/64)*y[n-1]`，滤波状态跨块保持、每次录音置零。只减去五秒平均值不能消除缓慢变化的直流；高通先于压缩，帮助区分启动漂移与实际音频，也避免弱信号提前被量化成零。高通不能恢复原本没有录到的人声，不能据此宣称麦克风问题已解决。
 
 每块128帧/1024字节，625次回调重新提交下一个Read，第626块完成后才Stop。FSP的Read API明确允许在RX_FULL回调提交下一次接收；块间不Stop/Open。线程消费上一块，中断交替使用另一块；如果两个块都尚未消费就需要复用，直接报overrun失败，避免静默覆盖或丢块。无采样中断内打印、内存申请或语音编码。
 
@@ -30,7 +32,7 @@ SSI保持独立audio-mic的24位PCM、32位时隙、4字节FIFO/DTC，每帧两�
 
 `MIC RECORD DONE`应为frames=80128/80128、blocks=626/626、elapsed约5000ms。`MIC errors`应为read=0、overrun=0、early_idle=0、stop=0、正常IDLE。`MIC second=1..5`显示原始24位左声道min/max/mean、接近满量程数、块内变化数和右声道绝对峰值；第一秒保留启动过程，随后四秒帮助检查稳定后声学响应。每秒切分以16026帧近似，前四段各16026帧，最后16024帧，合计80128。
 
-播放时解码mu-law、去均值、有限增益和首尾约10ms淡入淡出。全部五秒样本都回放，启动段没有丢弃；仅用后四秒估计均值和交流峰值，避免开头大峰值压低整段音量。最大增益改为64倍，最终数字仍限于±3000（已试听过的参考音峰值），真实声压受信号与喇叭影响；底噪同样可能放大，不能仅有声就判语音正常。稳定数据完全不变化时gain=0，仍播放五秒并打印统计，不虚构声音。
+新增 `MIC HP24 second=1..5`：滤波后的24位最小值、最大值、平均绝对幅度及存储限幅次数。先看后几秒的mean_abs是否随安静/发声产生可重复变化；原始峰值和changed_in_blocks不能独立证明有人声。播放时解码mu-law、去残余均值、有限增益和首尾约10ms淡入淡出。全部五秒样本都回放，启动段没有丢弃；仅用后四秒的高通数据估计均值和交流峰值。最大增益64倍，最终数字仍限于±3000（已试听过的参考音峰值），底噪同样可能放大。稳定数据完全不变化时gain=0，仍播放五秒并打印统计。
 
 `AUDIO PLAY DONE`应为samples=80128/80128、elapsed约5000ms、pwm_error=0；limited记录被限幅的样本数，启动段较大可能触发限幅。输出PWM仍为GPT6/P702/P703、80kHz，GPT2逐样本更新，结束两脚置低。成功硬件执行返回WAIT，需用户听音验收。
 
@@ -38,11 +40,49 @@ SSI保持独立audio-mic的24位PCM、32位时隙、4字节FIFO/DTC，每帧两�
 
 全部逻辑位于 `src/test/test-audio-replay.c`，保留唯一线程入口，不包含MSH注册、创建线程或跨例程调用；`src/test-main.c`保持串行调度，`src/hal_entry.c`和原独立audio-mic未修改。
 
-`validate_audio_replay.py`改为验证当前五秒版本，提取真实C函数由Studio ARM GCC编译，再在ARM模拟器执行12组检查。覆盖G.711标准向量和256个码字往返、24位符号扩展、626个分块的全部80128帧顺序与内容、采集/回放时长、互斥阶段、三个阶段取消、接收超时/提前IDLE/缓冲溢出、首/中/末次Read失败、SSI和GPT启动/停止失败、守护字损坏、内存失败、弱信号增益、零信号、限幅/淡入淡出和日志长度。FSP桩不代替真实DMA连续性或听音。
+`validate_audio_replay.py`提取真实C函数由Studio ARM GCC编译，再在ARM模拟器执行13组检查。新增近满幅直流衰减、慢漂移叠加约500Hz正弦的幅度保留；覆盖G.711向量、24位符号扩展、626个分块的全部80128帧滤波后内容与顺序、采集/回放时长、互斥阶段、取消、超时/提前IDLE/溢出、Read与启动/停止失败、守护字、内存失败、弱信号增益、零信号、限幅/淡入淡出及日志长度。FSP桩不代替真实DMA连续性或听音。13组ARM及30项主机回归通过，日志为 `logs/audio-replay-highpass-arm.log`、`logs/audio-replay-highpass-host-tests.log`。
 
-30项主机结构/转换工具回归通过；Studio编译0 errors/0 warnings，Flash1154804字节、静态RAM531720字节。DAP-LINK/PyOCD成功烧录1154832字节，退出码0；构建和烧录记录分别为 `logs/audio-replay-5s-build.log`、`logs/audio-replay-5s-flash.log`，模拟与主机检查为 `logs/audio-replay-5s-arm.log`、`logs/audio-replay-5s-host-tests.log`。助手不占用COM8，实际五秒计时、连续采样、声音内容等待用户日志和试听确认。
+v5构建：Studio编译0 errors/0 warnings，Flash1155332字节、静态RAM531848字节；DAP-LINK/PyOCD烧录1155344字节成功，退出码0，记录 `logs/audio-replay-highpass-build.log`、`logs/audio-replay-highpass-flash.log`。v5实物语音仍待用户试听；建议同一距离先安静一轮，再持续说话一轮，对照HP24日志。助手不占用COM8。
+
+v4历史构建：Studio编译0 errors/0 warnings，Flash1154804字节、静态RAM531720字节。DAP-LINK/PyOCD成功烧录1154832字节，退出码0；记录 `logs/audio-replay-5s-build.log`、`logs/audio-replay-5s-flash.log`。用户随后实测各5秒计时与全部帧完成，但持续发声仍无声，见下方原始日志。
 
 下面所有半秒/预热/参考音流程均为历史版本。
+
+## v4 首轮板上日志（2026-10-06）
+
+用户执行v4五秒版本后提供以下完整日志，并确认“持续说话，回放仍无声”。采集80128帧、626块均完成，耗时5000ms；回放80128样本全部输出，耗时5001ms。读错误、缓冲溢出、提前IDLE、停止错误及PWM错误均为0，正常返回WAIT/IDLE。计时与数据搬运完成，但语音验收失败。
+
+左声道第一秒含接近满量程的启动峰值；第二秒均值为-93577，第三至第五秒均值逐渐趋近0，整体存在明显启动漂移。稳定区间峰值估计仍包含第二秒漂移，不能直接解释为人声峰值。右声道峰值始终为0，与使用左声道的配置相符；changed_in_blocks仅说明数字发生变化。gain_q8=875约为3.42倍；limited=15219约占全部样本19.0%，说明输出存在限幅，不能单凭样本数完成判断声音正常。
+
+```text
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >REPLAY v4: independent MIC 5s -> recorded playback 5s; RAM mu-law
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC PCM24 slot32; 80128 frames, 626 blocks of 128 frames; output mono mu-law
+MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE
+MIC RECORD DONE: frames=80128/80128 blocks=626/626 elapsed=5000 ms
+MIC errors: read=0 overrun=0 early_idle=0 stop=0 idle=1 result=0
+MIC second=1 frames=16026 L24 min=-892037 max=8387410 mean=133212
+MIC second=1 changed_in_blocks=15888 near_full=1 R24_peak=0
+MIC second=2 frames=16026 L24 min=-258684 max=-21314 mean=-93577
+MIC second=2 changed_in_blocks=15894 near_full=0 R24_peak=0
+MIC second=3 frames=16026 L24 min=-28754 max=3125 mean=-12616
+MIC second=3 changed_in_blocks=15883 near_full=0 R24_peak=0
+MIC second=4 frames=16026 L24 min=-13460 max=5176 mean=-4749
+MIC second=4 changed_in_blocks=15888 near_full=0 R24_peak=0
+MIC second=5 frames=16024 L24 min=-16629 max=6954 mean=-3595
+MIC second=5 changed_in_blocks=15879 near_full=0 R24_peak=0
+PCM mu-law mono bytes=80128; stable_mean=-111 stable_peak=877 gain_q8=875
+PCM output limited to +/-3000; silence/noise does not prove a recorded voice
+AUDIO PLAY NOW: replaying the recorded 5 seconds
+AUDIO PLAY DONE: samples=80128/80128 elapsed=5001 ms pwm_error=0 limited=15219
+AUDIO duty_A=682..818 result=1; listening confirmation required
+TEST RESULT audio-replay WAIT code=1 elapsed=13241 ms
+TEST IDLE
+```
 
 ## v3 PCM24 操作历史
 
