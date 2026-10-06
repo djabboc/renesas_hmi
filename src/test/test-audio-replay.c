@@ -1,24 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /**
  * @file test-audio-replay.c
- * @brief 独立完成麦克风录音和扬声器回放。
+ * @brief 独立录音 5 秒，再通过 J8 喇叭回放同一段录音 5 秒。
  *
- * 先播放参考音，再预热 SSI 麦克风时钟，倒计时后录音、回放和重播参考音。
- * SSI 采集 24 位双声道，显式符号扩展后在同一缓冲内转为 16 位左声道。
- * 先停 DMA/定时器再释放缓冲，硬件完成仍需结合人工试听。
- * 阅读顺序：文件末尾线程入口 → run_test → 本文件的硬件辅助函数。
- * 只依赖 RT-Thread、FSP 及所用库，不调用其他测试文件。
+ * SSI/DTC 连续采集 24 位双声道；线程提取左声道并编码为 G.711 mu-law。
+ * 每样本存 1 字节，使 5 秒录音能放入现有堆；回放时还原为 PCM16。
+ * 一个线程完成倒计时、采集、回放和清理，不调用其他测试文件。
+ * 阅读顺序：线程入口 → run_test → capture_audio / play_audio → 中断回调。
  */
 #include <rtthread.h>
 #include "hal_data.h"
 #include <string.h>
 
-/* 结果：0=断言通过，1=等待人工观察，2=缺少测试条件，负值=错误。 */
 enum
 {
     TEST_PASS = 0,
-    TEST_WAIT = 1,
-    TEST_SKIP = 2
+    TEST_WAIT = 1
 };
 
 /* 参数可为 NULL；提供 RT-Thread 事件对象时，bit0 表示请求协作退出。
@@ -75,127 +72,74 @@ static int mute_output_pins(void)
     return result;
 }
 
-#define AUDIO_FRAMES 8192u
+/* GPT1 时钟：120MHz/117；双声道每帧 64 个位时钟。
+ * GPT2 使用相同的 117*64 分频，录音与播放均约 16025.64 样本/秒。
+ * 80128 帧对应 4.999987 秒，正好分为 626 个 128 帧块。 */
+#define AUDIO_CLOCK_HZ 120000000u
+#define AUDIO_CLOCK_PERIOD 117u
+#define AUDIO_SAMPLE_PERIOD (AUDIO_CLOCK_PERIOD * 64u)
+#define AUDIO_SECONDS 5u
+#define AUDIO_FRAMES (AUDIO_CLOCK_HZ * AUDIO_SECONDS / AUDIO_SAMPLE_PERIOD)
+#define AUDIO_BLOCK_FRAMES 128u
+#define AUDIO_BLOCK_COUNT (AUDIO_FRAMES / AUDIO_BLOCK_FRAMES)
 #define AUDIO_CHANNELS 2u
-#define AUDIO_CAPTURE_BYTES (AUDIO_FRAMES * AUDIO_CHANNELS * sizeof(uint32_t))
-#define AUDIO_CAPTURE_TIMEOUT_MS 2000u
-#define AUDIO_PLAYBACK_TIMEOUT_MS 2000u
-#define AUDIO_PWM_PERIOD_COUNTS 1500u
-#define AUDIO_PWM_CENTER_COUNTS 750
-#define AUDIO_SAMPLE_PERIOD_COUNTS 7488u
-#define AUDIO_SAMPLE_LIMIT 4000
-#define AUDIO_PLAYBACK_TARGET_PEAK 3000
+#define AUDIO_BLOCK_BYTES (AUDIO_BLOCK_FRAMES * AUDIO_CHANNELS * sizeof(uint32_t))
+#define AUDIO_SECOND_FRAMES 16026u
+#define AUDIO_TIMEOUT_MS 6500u
+#define AUDIO_GUARD 0x51A7C0DEu
+#define AUDIO_PWM_PERIOD 1500u
+#define AUDIO_PWM_CENTER 750
+#define AUDIO_OUTPUT_LIMIT 3000
 #define AUDIO_GAIN_SCALE 256
-#define AUDIO_MAX_GAIN (8 * AUDIO_GAIN_SCALE)
+#define AUDIO_MAX_GAIN (64 * AUDIO_GAIN_SCALE)
 #define AUDIO_FADE_FRAMES 160u
-#define AUDIO_REFERENCE_FRAMES 8192u
-#define AUDIO_BUFFER_GUARD 0x51A7C0DEu
-#define AUDIO_BUFFER_FILL_BYTE 0xA5u
-#define AUDIO_CAPTURE_FILL_WORD 0xA5A5A5A5u
-/* 这些完成标志/位置由中断更新，由测试线程轮询。 */
-static volatile unsigned capture_complete;
-static volatile unsigned capture_active;
-static volatile unsigned capture_rx_events;
-static volatile unsigned capture_idle_events;
-static volatile unsigned capture_early_idle;
-static volatile fsp_err_t capture_stop_error;
-static volatile rt_tick_t capture_finished_at;
-static volatile unsigned capture_end_ssicr;
-static volatile unsigned capture_end_ssisr;
-static volatile unsigned capture_end_ssifsr;
-static volatile unsigned capture_end_cpu_words;
-static volatile unsigned playback_position;
-static const int16_t *playback_samples;
-static unsigned playback_frame_count;
-static volatile fsp_err_t playback_error;
-static volatile unsigned playback_duty_min;
-static volatile unsigned playback_duty_max;
-static volatile unsigned playback_duty_nonzero;
 
-/* 统计放在线程里完成，不占用音频采样中断的时间。
- * mean 是直流分量；ac_peak/mean_abs_ac 描述去直流后的峰值/平均绝对幅度。
- * changed 只能证明数字变化，不能单独证明这些数字是正确的声音。 */
-struct pcm_statistics
+/* DTC 写入当前块时，线程处理上一块；哨兵用于检查 DMA 是否越界。
+ * 不在中断内编码或打印。线程若来不及处理，直接报错，避免静默丢块。 */
+struct capture_buffer
+{
+    uint32_t before;
+    uint32_t samples[AUDIO_BLOCK_FRAMES * AUDIO_CHANNELS];
+    uint32_t after;
+};
+static struct capture_buffer capture_buffers[2];
+
+/* 原始 24 位数据按秒统计；sum 使用 64 位，防止累加溢出。
+ * changed 只能证明数字变化，音频内容仍需实际试听。 */
+struct capture_statistics
 {
     int minimum;
     int maximum;
-    int mean;
-    int ac_peak;
-    unsigned mean_abs_ac;
-    unsigned zero_samples;
-    unsigned changed_samples;
-    unsigned clipped_samples;
+    int64_t sum;
+    unsigned frames;
+    unsigned changed;
+    unsigned near_full;
+    unsigned right_peak;
 };
+static struct capture_statistics capture_statistics[AUDIO_SECONDS];
+static volatile unsigned capture_completed;
+static volatile unsigned capture_consumed;
+static volatile unsigned capture_running;
+static volatile unsigned capture_stop_requested;
+static volatile unsigned capture_idle_events;
+static volatile unsigned capture_overruns;
+static volatile unsigned capture_early_idle;
+static volatile int capture_error;
+static volatile fsp_err_t capture_read_error;
+static volatile fsp_err_t capture_stop_error;
+static volatile rt_tick_t capture_finished_at;
 
-/* stride=2 读取交错的一个声道，stride=1 读取已经提取的单声道。
- * 调用者保证 frames>0，且缓冲覆盖 frames 个指定步长的样本。 */
-static void measure_pcm(const int16_t *samples, unsigned frames, unsigned stride,
-                        struct pcm_statistics *statistics)
-{
-    int64_t sum = 0;
-    uint64_t absolute_sum = 0;
-    memset(statistics, 0, sizeof(*statistics));
-    statistics->minimum = INT16_MAX;
-    statistics->maximum = INT16_MIN;
-    for (unsigned index = 0; index < frames; ++index)
-    {
-        int sample = samples[index * stride];
-        sum += sample;
-        if (sample < statistics->minimum)
-        {
-            statistics->minimum = sample;
-        }
-        if (sample > statistics->maximum)
-        {
-            statistics->maximum = sample;
-        }
-        if (sample == 0)
-        {
-            ++statistics->zero_samples;
-        }
-        if (index > 0 && sample != samples[(index - 1u) * stride])
-        {
-            ++statistics->changed_samples;
-        }
-        if (sample <= -32760 || sample >= 32760)
-        {
-            ++statistics->clipped_samples;
-        }
-    }
-    statistics->mean = (int)(sum / (int64_t)frames);
-    for (unsigned index = 0; index < frames; ++index)
-    {
-        int magnitude = (int)samples[index * stride] - statistics->mean;
-        if (magnitude < 0)
-        {
-            magnitude = -magnitude;
-        }
-        absolute_sum += (unsigned)magnitude;
-        if (magnitude > statistics->ac_peak)
-        {
-            statistics->ac_peak = magnitude;
-        }
-    }
-    statistics->mean_abs_ac = (unsigned)(absolute_sum / frames);
-}
+/* 回放时保持录音缓冲有效，直到 GPT2 停止；中断只解码并更新占空比。 */
+static const uint8_t *recording;
+static volatile unsigned playback_position;
+static volatile fsp_err_t playback_error;
+static volatile unsigned playback_limited;
+static volatile unsigned playback_duty_min;
+static volatile unsigned playback_duty_max;
+static int playback_mean;
+static int playback_gain;
 
-/* 同一格式比较安静/发声、左右声道和处理前后，避免只看单个最大值。 */
-static void print_pcm_statistics(const char *label, const int16_t *samples,
-                                 unsigned frames, unsigned stride)
-{
-    struct pcm_statistics statistics;
-    measure_pcm(samples, frames, stride, &statistics);
-    /* 当前工程串口格式化缓冲为 128 字节，拆行保留全部字段和换行。 */
-    rt_kprintf("PCM %s n=%u min=%d max=%d mean=%d ac_peak=%d\n",
-               label, frames, statistics.minimum, statistics.maximum, statistics.mean,
-               statistics.ac_peak);
-    rt_kprintf("PCM %s mean_abs_ac=%u zero=%u changed=%u clipped=%u\n",
-               label, statistics.mean_abs_ac, statistics.zero_samples,
-               statistics.changed_samples, statistics.clipped_samples);
-}
-
-/* SSI 的 PDTA 配置把 24 位数据右对齐在 32 位字中。
- * 先取低 24 位，再显式扩展符号；避免依赖编译器对负数右移的处理。 */
+/* 24 位数据右对齐；先掩码，再显式扩展符号，不依赖负数右移行为。 */
 static int pcm24_signed(uint32_t word)
 {
     int value = (int)(word & 0x00FFFFFFu);
@@ -206,193 +150,142 @@ static int pcm24_signed(uint32_t word)
     return value;
 }
 
-/* 原始 24 位统计与后续 16 位统计使用同样字段，但数值单位不同。
- * 原始数据除以 256 后才处在 PCM16 的幅度单位，不能直接比较两个峰值。 */
-static void measure_pcm24(const uint32_t *samples, unsigned frames, unsigned stride,
-                          struct pcm_statistics *statistics)
+/* G.711 mu-law 对小幅声音保留较细量化，大幅声音使用较粗量化。
+ * 一个字节保存符号、3 位段号和 4 位尾数；相比线性 PCM8 更适合语音。
+ * 这是有损编码；它只节省录音 RAM，不是 MP3，也不替代正确采样。 */
+static unsigned encode_mulaw(int sample)
 {
-    int64_t sum = 0;
-    uint64_t absolute_sum = 0;
-    memset(statistics, 0, sizeof(*statistics));
-    statistics->minimum = 8388607;
-    statistics->maximum = -8388608;
-    for (unsigned index = 0; index < frames; ++index)
+    unsigned sign = 0;
+    if (sample < 0)
     {
-        int sample = pcm24_signed(samples[index * stride]);
-        sum += sample;
-        if (sample < statistics->minimum)
-        {
-            statistics->minimum = sample;
-        }
-        if (sample > statistics->maximum)
-        {
-            statistics->maximum = sample;
-        }
-        if (sample == 0)
-        {
-            ++statistics->zero_samples;
-        }
-        if (index > 0 && sample != pcm24_signed(samples[(index - 1u) * stride]))
-        {
-            ++statistics->changed_samples;
-        }
-        if (sample <= -8386560 || sample >= 8386560)
-        {
-            ++statistics->clipped_samples;
-        }
+        sign = 0x80u;
+        sample = -sample;
     }
-    statistics->mean = (int)(sum / (int64_t)frames);
-    for (unsigned index = 0; index < frames; ++index)
+    if (sample > 32635)
     {
-        int magnitude = pcm24_signed(samples[index * stride]) - statistics->mean;
-        if (magnitude < 0)
-        {
-            magnitude = -magnitude;
-        }
-        absolute_sum += (unsigned)magnitude;
-        if (magnitude > statistics->ac_peak)
-        {
-            statistics->ac_peak = magnitude;
-        }
+        sample = 32635;
     }
-    statistics->mean_abs_ac = (unsigned)(absolute_sum / frames);
+    sample += 132;
+    unsigned exponent = 0;
+    unsigned boundary = 256;
+    while ((unsigned)sample >= boundary && exponent < 7)
+    {
+        ++exponent;
+        boundary *= 2;
+    }
+    unsigned mantissa = ((unsigned)sample >> (exponent + 3u)) & 0x0Fu;
+    return (~(sign | (exponent << 4u) | mantissa)) & 0xFFu;
 }
 
-static void print_pcm24_statistics(const char *label, const uint32_t *samples,
-                                   unsigned frames, unsigned stride)
+/* 反转编码位，按段号还原幅度，再减去编码时的偏置 132。 */
+static int decode_mulaw(unsigned code)
 {
-    struct pcm_statistics statistics;
-    measure_pcm24(samples, frames, stride, &statistics);
-    rt_kprintf("PCM24 %s n=%u min=%d max=%d mean=%d ac_peak=%d\n",
-               label, frames, statistics.minimum, statistics.maximum,
-               statistics.mean, statistics.ac_peak);
-    rt_kprintf("PCM24 %s mean_abs_ac=%u zero=%u changed=%u clipped=%u\n",
-               label, statistics.mean_abs_ac, statistics.zero_samples,
-               statistics.changed_samples, statistics.clipped_samples);
+    unsigned value = (~code) & 0xFFu;
+    unsigned exponent = (value >> 4u) & 7u;
+    int sample = (int)(((value & 0x0Fu) * 8u + 132u) << exponent) - 132;
+    if ((value & 0x80u) != 0)
+    {
+        sample = -sample;
+    }
+    return sample;
 }
 
-/* 原始 32 位字、符号扩展后的 24 位值、转换后的 PCM16 同时打印。
- * 先观察左右声道和四段窗口，再转换；A5 填充值只作完整接收的辅助线索。 */
-static void inspect_capture(const uint32_t *samples)
+/* 正常录满和错误退出都先请求停止，关闭 SSI 留在线程内完成。 */
+static void stop_capture(void)
 {
-    unsigned fill_words = 0;
-    for (unsigned index = 0; index < AUDIO_FRAMES * AUDIO_CHANNELS; ++index)
-    {
-        if (samples[index] == AUDIO_CAPTURE_FILL_WORD)
-        {
-            ++fill_words;
-        }
-    }
-    rt_kprintf("MIC buffer fill_A5A5A5A5=%u/%u (large count suggests incomplete reception)\n",
-               fill_words, AUDIO_FRAMES * AUDIO_CHANNELS);
-    print_pcm24_statistics("RAW-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
-    print_pcm24_statistics("RAW-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
-    for (unsigned part = 0; part < 4; ++part)
-    {
-        unsigned first = part * (AUDIO_FRAMES / 4u);
-        rt_kprintf("MIC window=%u frames=%u..%u (~128ms)\n",
-                   part, first, first + AUDIO_FRAMES / 4u - 1u);
-        print_pcm24_statistics("WIN-L", samples + first * AUDIO_CHANNELS,
-                               AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
-        print_pcm24_statistics("WIN-R", samples + first * AUDIO_CHANNELS + 1u,
-                               AUDIO_FRAMES / 4u, AUDIO_CHANNELS);
-        for (unsigned offset = 0; offset < 3; ++offset)
-        {
-            unsigned index = (first + offset) * AUDIO_CHANNELS;
-            int left = pcm24_signed(samples[index]);
-            int right = pcm24_signed(samples[index + 1u]);
-            rt_kprintf("MIC raw frame=%u L=%08X/%d R=%08X/%d\n", first + offset,
-                       (unsigned)samples[index], left, (unsigned)samples[index + 1u], right);
-            rt_kprintf("MIC PCM16 frame=%u L=%d R=%d (signed24 / 256)\n",
-                       first + offset, left / 256, right / 256);
-        }
-    }
+    capture_running = 0;
+    capture_stop_requested = 1;
+    capture_stop_error = R_SSI_Stop(&g_i2s0_ctrl);
 }
 
-/* 原地把 24 位双声道转为 16 位单声道；先读当前字，再写前面的 PCM16。
- * memcpy 避免同一 RAM 的 uint32_t/int16_t 类型别名问题；写入不会覆盖后续帧。
- * 除以 256 丢弃最低 8 位，整数除法向零取整；增益仍由 prepare_playback 处理。 */
-static void convert_left_pcm24(void *buffer)
-{
-    uint8_t *bytes = buffer;
-    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
-    {
-        uint32_t word;
-        memcpy(&word, bytes + index * AUDIO_CHANNELS * sizeof(uint32_t), sizeof(word));
-        int16_t sample = (int16_t)(pcm24_signed(word) / 256);
-        memcpy(bytes + index * sizeof(int16_t), &sample, sizeof(sample));
-    }
-    print_pcm_statistics("CONVERTED-L", (const int16_t *)buffer, AUDIO_FRAMES, 1);
-}
-
-/* 等待可被停止事件打断，倒计时和试听间隔都不会阻塞退出数秒。 */
-static int wait_ms(unsigned milliseconds)
-{
-    rt_tick_t start = rt_tick_get();
-    while (!test_elapsed(start, milliseconds))
-    {
-        if (test_cancelled())
-        {
-            return -RT_EINTR;
-        }
-        rt_thread_mdelay(10);
-    }
-    return TEST_PASS;
-}
-
-/* 最后一帧已进入 RAM 后，立即停止 REN/DTC，避免等待线程期间再次触发 RX。
- * WS_CONTINUE 保持 BCLK/LRCLK，停止接收不会让麦克风重新进入无时钟状态。
- * Stop 只操作寄存器和 DTC，不分配内存或打印；关闭 SSI 留给线程完成。 */
+/* FSP 允许在 RX_FULL 回调中提交下一个 Read；SSI 保持 REN 连续接收。
+ * 下一块使用另一缓冲，不在块间 Stop/Open，避免人为制造采样间隙。 */
 static void mic_callback(i2s_callback_args_t *arguments)
 {
-    if (arguments->event == I2S_EVENT_RX_FULL)
+    if (arguments->event == I2S_EVENT_RX_FULL && capture_running)
     {
-        ++capture_rx_events;
-        if (capture_active && !capture_complete)
+        __DMB();
+        ++capture_completed;
+        if (capture_completed == AUDIO_BLOCK_COUNT)
         {
             capture_finished_at = rt_tick_get();
-            capture_end_ssicr = R_SSI0->SSICR;
-            capture_end_ssisr = R_SSI0->SSISR;
-            capture_end_ssifsr = R_SSI0->SSIFSR;
-            capture_end_cpu_words = g_i2s0_ctrl.rx_dest_samples;
-            /* 先取消采集活动标记，之后的正常 IDLE 不会被误判为提前退出。 */
-            capture_active = 0;
-            capture_stop_error = R_SSI_Stop(&g_i2s0_ctrl);
-            capture_complete = 1;
+            stop_capture();
+            return;
+        }
+        if (capture_completed - capture_consumed >= 2u)
+        {
+            ++capture_overruns;
+            capture_error = -RT_EFULL;
+            stop_capture();
+            return;
+        }
+        unsigned next = capture_completed % 2u;
+        capture_read_error = R_SSI_Read(&g_i2s0_ctrl, capture_buffers[next].samples,
+                                       AUDIO_BLOCK_BYTES);
+        if (capture_read_error != FSP_SUCCESS)
+        {
+            capture_error = -RT_ERROR;
+            stop_capture();
         }
     }
     else if (arguments->event == I2S_EVENT_IDLE)
     {
         ++capture_idle_events;
-        if (capture_active && !capture_complete)
+        if (capture_running)
         {
-            capture_early_idle = 1;
+            ++capture_early_idle;
+            capture_error = -RT_ERROR;
+            capture_running = 0;
         }
     }
 }
 
-/* 只清理本次成功打开的 GPT；先停止再关闭，每个返回值都记录。 */
-static int close_timer(const char *label, gpt_instance_ctrl_t *control)
+/* 只在线程中处理已完成块；转换前先统计原始值，不掩盖启动段。
+ * 用有符号除法把 24 位数据转 PCM16，再编码；低 8 位舍弃，向零取整。 */
+static void consume_block(uint8_t *destination, unsigned block)
 {
-    int result = TEST_PASS;
-    fsp_err_t error = R_GPT_Stop(control);
-    if (error != FSP_SUCCESS)
+    const uint32_t *samples = capture_buffers[block % 2u].samples;
+    unsigned first = block * AUDIO_BLOCK_FRAMES;
+    for (unsigned offset = 0; offset < AUDIO_BLOCK_FRAMES; ++offset)
     {
-        rt_kprintf("AUDIO %s timer stop error=%d\n", label, error);
-        result = -RT_ERROR;
+        unsigned frame = first + offset;
+        int left = pcm24_signed(samples[offset * AUDIO_CHANNELS]);
+        int right = pcm24_signed(samples[offset * AUDIO_CHANNELS + 1u]);
+        struct capture_statistics *statistics = &capture_statistics[frame / AUDIO_SECOND_FRAMES];
+        if (left < statistics->minimum)
+        {
+            statistics->minimum = left;
+        }
+        if (left > statistics->maximum)
+        {
+            statistics->maximum = left;
+        }
+        statistics->sum += left;
+        ++statistics->frames;
+        if (offset > 0 && left != pcm24_signed(samples[(offset - 1u) * AUDIO_CHANNELS]))
+        {
+            ++statistics->changed;
+        }
+        if (left <= -8386560 || left >= 8386560)
+        {
+            ++statistics->near_full;
+        }
+        if (right < 0)
+        {
+            right = -right;
+        }
+        if ((unsigned)right > statistics->right_peak)
+        {
+            statistics->right_peak = (unsigned)right;
+        }
+        destination[frame] = (uint8_t)encode_mulaw(left / 256);
     }
-    error = R_GPT_Close(control);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("AUDIO %s timer close error=%d\n", label, error);
-        result = -RT_ERROR;
-    }
-    return result;
+    /* 全部数据读取完成后再公布 consumed，避免 ISR 提前复用本块。 */
+    __DMB();
+    ++capture_consumed;
 }
 
-/* SSI Stop 在当前帧结束后产生 IDLE；等到这个事件再重启接收或关闭。
- * 回调记录 IDLE，因此不依赖可能已被驱动清除的 SSISR.IIRQ 标志。
- * 清理等待不响应取消，保证取消请求不会跳过硬件停止过程。 */
+/* 清理等待不响应取消，确保停止请求不会跳过 SSI 的帧结束过程。 */
 static int wait_capture_idle(void)
 {
     rt_tick_t start = rt_tick_get();
@@ -402,333 +295,263 @@ static int wait_capture_idle(void)
     }
     if (capture_idle_events == 0)
     {
-        rt_kprintf("MIC idle timeout after stop; SSI will be closed\n");
         return -RT_ETIMEOUT;
     }
     return TEST_PASS;
 }
 
-/* 预热和正式录音共用一次接收过程；调用者保持 SSI/GPT1 打开。
- * 每次重填缓冲、清零诊断状态，完成回调立即 Stop；错误/超时由线程 Stop。
- * 接收停止后才打印详细状态，避免日志耗时人为制造 FIFO 溢出。 */
-static int capture_block(const char *label, uint32_t *samples, const i2s_cfg_t *config)
+/* 已成功打开的 GPT 必须先 Stop 再 Close，两个返回值都检查。 */
+static int close_timer(const char *label, gpt_instance_ctrl_t *control)
 {
+    int result = TEST_PASS;
+    fsp_err_t error = R_GPT_Stop(control);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("REPLAY %s timer stop error=%d\n", label, error);
+        result = -RT_ERROR;
+    }
+    error = R_GPT_Close(control);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("REPLAY %s timer close error=%d\n", label, error);
+        result = -RT_ERROR;
+    }
+    return result;
+}
+
+/* 录音期间扬声器保持静音。与独立 audio-mic 相同，从启动后的第一帧采集。
+ * 所有 80128 帧连续保存，5 秒完成后关闭 SSI/DTC/GPT1，再进入回放。 */
+static int capture_audio(uint8_t *destination)
+{
+    timer_cfg_t clock_config = g_timer_cfg;
+    i2s_cfg_t microphone_config = g_i2s0_cfg;
     int result = -RT_ERROR;
     fsp_err_t error;
-    if (test_cancelled())
-    {
-        return -RT_EINTR;
-    }
-    memset(samples, AUDIO_BUFFER_FILL_BYTE, AUDIO_CAPTURE_BYTES);
-    capture_complete = 0;
-    capture_active = 0;
-    capture_rx_events = 0;
+    rt_tick_t start = rt_tick_get();
+    capture_completed = 0;
+    capture_consumed = 0;
+    capture_running = 0;
+    capture_stop_requested = 0;
     capture_idle_events = 0;
+    capture_overruns = 0;
     capture_early_idle = 0;
+    capture_error = 0;
+    capture_read_error = FSP_SUCCESS;
     capture_stop_error = FSP_SUCCESS;
     capture_finished_at = 0;
-    capture_end_ssicr = 0;
-    capture_end_ssisr = 0;
-    capture_end_ssifsr = 0;
-    capture_end_cpu_words = 0;
-    rt_tick_t start = rt_tick_get();
-    capture_active = 1;
-    error = R_SSI_Read(&g_i2s0_ctrl, samples, AUDIO_CAPTURE_BYTES);
-    if (error == FSP_SUCCESS)
+    memset(capture_statistics, 0, sizeof(capture_statistics));
+    for (unsigned index = 0; index < AUDIO_SECONDS; ++index)
     {
-        while (!capture_complete && !test_elapsed(start, AUDIO_CAPTURE_TIMEOUT_MS) &&
-               !capture_early_idle && !test_cancelled())
+        capture_statistics[index].minimum = 8388607;
+        capture_statistics[index].maximum = -8388608;
+    }
+    for (unsigned index = 0; index < 2; ++index)
+    {
+        capture_buffers[index].before = AUDIO_GUARD;
+        capture_buffers[index].after = AUDIO_GUARD;
+    }
+    if (configure_audio_pin(BSP_IO_PORT_04_PIN_03) != TEST_PASS ||
+        configure_audio_pin(BSP_IO_PORT_04_PIN_04) != TEST_PASS ||
+        configure_audio_pin(BSP_IO_PORT_04_PIN_06) != TEST_PASS)
+    {
+        rt_kprintf("MIC pin configuration failed\n");
+        return -RT_ERROR;
+    }
+    clock_config.period_counts = AUDIO_CLOCK_PERIOD;
+    clock_config.duty_cycle_counts = AUDIO_CLOCK_PERIOD / 2u;
+    clock_config.source_div = TIMER_SOURCE_DIV_1;
+    microphone_config.pcm_width = I2S_PCM_WIDTH_24_BITS;
+    microphone_config.word_length = I2S_WORD_LENGTH_32_BITS;
+    microphone_config.ws_continue = I2S_WS_CONTINUE_OFF;
+    microphone_config.p_callback = mic_callback;
+    error = R_GPT_Open(&g_timer_ctrl, &clock_config);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC clock open error=%d\n", error);
+        return -RT_ERROR;
+    }
+    error = R_GPT_Start(&g_timer_ctrl);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC clock start error=%d\n", error);
+        goto clock_close;
+    }
+    error = R_SSI_Open(&g_i2s0_ctrl, &microphone_config);
+    if (error != FSP_SUCCESS)
+    {
+        rt_kprintf("MIC SSI open error=%d\n", error);
+        goto clock_close;
+    }
+    rt_kprintf("MIC PCM24 slot32; %u frames, %u blocks of %u frames; output mono mu-law\n",
+               AUDIO_FRAMES, AUDIO_BLOCK_COUNT, AUDIO_BLOCK_FRAMES);
+    rt_kprintf("MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE\n");
+    start = rt_tick_get();
+    capture_running = 1;
+    capture_read_error = R_SSI_Read(&g_i2s0_ctrl, capture_buffers[0].samples, AUDIO_BLOCK_BYTES);
+    if (capture_read_error == FSP_SUCCESS)
+    {
+        while (capture_consumed < AUDIO_BLOCK_COUNT && capture_error == 0)
         {
-            rt_thread_mdelay(1);
+            if (test_cancelled())
+            {
+                result = -RT_EINTR;
+                break;
+            }
+            if (test_elapsed(start, AUDIO_TIMEOUT_MS))
+            {
+                result = -RT_ETIMEOUT;
+                break;
+            }
+            if (capture_consumed < capture_completed)
+            {
+                consume_block(destination, capture_consumed);
+            }
+            else
+            {
+                rt_thread_mdelay(1);
+            }
         }
-        if (test_cancelled())
+        if (capture_error != 0)
         {
-            result = -RT_EINTR;
+            result = capture_error;
         }
-        else if (capture_early_idle)
-        {
-            result = -RT_ERROR;
-        }
-        else if (capture_complete)
+        else if (capture_consumed == AUDIO_BLOCK_COUNT)
         {
             result = TEST_PASS;
         }
-        else
-        {
-            result = -RT_ETIMEOUT;
-        }
     }
-    else
+    if (!capture_stop_requested)
     {
-        rt_kprintf("MIC %s read error=%d\n", label, error);
-    }
-    capture_active = 0;
-    if (!capture_complete)
-    {
-        capture_finished_at = rt_tick_get();
-        capture_end_ssicr = R_SSI0->SSICR;
-        capture_end_ssisr = R_SSI0->SSISR;
-        capture_end_ssifsr = R_SSI0->SSIFSR;
-        capture_end_cpu_words = g_i2s0_ctrl.rx_dest_samples;
-        capture_stop_error = R_SSI_Stop(&g_i2s0_ctrl);
+        stop_capture();
     }
     if (capture_stop_error != FSP_SUCCESS)
     {
-        rt_kprintf("MIC %s stop error=%d\n", label, capture_stop_error);
         result = -RT_ERROR;
     }
     else if (wait_capture_idle() != TEST_PASS)
     {
         result = -RT_ETIMEOUT;
     }
-    rt_kprintf("MIC %s result=%d complete=%u rx_events=%u early_idle=%u idle=%u\n",
-               label, result, capture_complete, capture_rx_events,
-               capture_early_idle, capture_idle_events);
-    rt_kprintf("MIC %s elapsed=%u ms remaining_CPU_words=%u\n", label,
-               (unsigned)((capture_finished_at - start) * 1000u / RT_TICK_PER_SECOND),
-               capture_end_cpu_words);
-    rt_kprintf("MIC %s end: SSICR=%08X SSISR=%08X SSIFSR=%08X\n", label,
-               capture_end_ssicr, capture_end_ssisr, capture_end_ssifsr);
-    if (config->p_transfer_rx != NULL)
+    unsigned elapsed_ms = (unsigned)((rt_tick_get() - start) * 1000u / RT_TICK_PER_SECOND);
+    if (capture_completed == AUDIO_BLOCK_COUNT)
     {
-        transfer_properties_t properties;
-        error = config->p_transfer_rx->p_api->infoGet(
-            config->p_transfer_rx->p_ctrl, &properties);
-        if (error == FSP_SUCCESS)
-        {
-            rt_kprintf("MIC %s DTC remaining_blocks=%u remaining_length=%u\n", label,
-                       (unsigned)properties.block_count_remaining,
-                       (unsigned)properties.transfer_length_remaining);
-        }
-        else
-        {
-            rt_kprintf("MIC %s DTC info error=%d\n", label, error);
-            result = -RT_ERROR;
-        }
+        elapsed_ms = (unsigned)((capture_finished_at - start) * 1000u / RT_TICK_PER_SECOND);
     }
-    return result;
-}
-
-/* 先接收并丢弃启动段，再保持时钟倒计时，正式采集一个新缓冲。
- * WS_CONTINUE_ON 保持空闲期间的 BCLK/LRCLK，避免倒计时后重新启动麦克风。
- * 两段接收共用 65536 字节 RAM；始终先关闭 SSI/DTC，再关闭 GPT1 时钟。 */
-static int capture_audio(uint32_t *samples)
-{
-    i2s_cfg_t microphone_config = g_i2s0_cfg;
-    timer_cfg_t audio_clock_config = g_timer_cfg;
-    int result = -RT_ERROR;
-    fsp_err_t error;
-    /* GPT1A 内部供 SSI 时钟：120MHz / 117 / 64 = 16025.64 双声道帧/秒。 */
-    audio_clock_config.period_counts = 117;
-    audio_clock_config.duty_cycle_counts = 58;
-    audio_clock_config.source_div = TIMER_SOURCE_DIV_1;
-    /* 与工程原始 audio-mic 一致：24 位右对齐，FIFO/DTC 每次访问 4 字节。
-     * 每帧 8 字节，65536 字节缓冲录 8192 帧约半秒；保留连续时钟预热。 */
-    microphone_config.pcm_width = I2S_PCM_WIDTH_24_BITS;
-    microphone_config.word_length = I2S_WORD_LENGTH_32_BITS;
-    microphone_config.ws_continue = I2S_WS_CONTINUE_ON;
-    microphone_config.p_callback = mic_callback;
-    if (configure_audio_pin(BSP_IO_PORT_04_PIN_03) != TEST_PASS ||
-        configure_audio_pin(BSP_IO_PORT_04_PIN_04) != TEST_PASS ||
-        configure_audio_pin(BSP_IO_PORT_04_PIN_06) != TEST_PASS)
-    {
-        rt_kprintf("MIC SSI pin configuration failed\n");
-        return -RT_ERROR;
-    }
-    rt_kprintf("MIC pins P403=%08X P404=%08X P406=%08X\n",
-               (unsigned)R_PFS->PORT[4].PIN[3].PmnPFS,
-               (unsigned)R_PFS->PORT[4].PIN[4].PmnPFS,
-               (unsigned)R_PFS->PORT[4].PIN[6].PmnPFS);
-    rt_kprintf("MIC config: PCM=24 slot=32 channels=2 bytes=%u expected=511ms\n",
-               (unsigned)AUDIO_CAPTURE_BYTES);
-    rt_kprintf("MIC clocks: PCLKD=%u GPT1 period=117 BCLK~1025641Hz LRCLK~16026Hz\n",
-               R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD));
-    error = R_GPT_Open(&g_timer_ctrl, &audio_clock_config);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC clock timer open error=%d\n", error);
-        return -RT_ERROR;
-    }
-    error = R_GPT_Start(&g_timer_ctrl);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC clock timer start error=%d\n", error);
-        goto timer_close;
-    }
-    error = R_SSI_Open(&g_i2s0_ctrl, &microphone_config);
-    if (error != FSP_SUCCESS)
-    {
-        rt_kprintf("MIC SSI open error=%d\n", error);
-        goto timer_close;
-    }
-    rt_kprintf("MIC SSI opened: SSICR=%08X SSIFCR=%08X SSIOFR=%08X\n",
-               (unsigned)R_SSI0->SSICR, (unsigned)R_SSI0->SSIFCR, (unsigned)R_SSI0->SSIOFR);
-    rt_kprintf("MIC WS_CONTINUE ON; FIFO_access=%u bytes RX_IRQ=%d\n",
-               1u << g_i2s0_ctrl.fifo_access_size, microphone_config.rxi_irq);
-    if (microphone_config.p_transfer_rx != NULL)
-    {
-        /* DTC 块模式将块长度同时写入 CRAH/CRAL，0x0202 表示长度 2。 */
-        unsigned raw_length = microphone_config.p_transfer_rx->p_cfg->p_info->length;
-        rt_kprintf("MIC DTC access=%u bytes CRA_raw=%04X block_length=%u src=%08X\n",
-                   1u << microphone_config.p_transfer_rx->p_cfg->p_info->size,
-                   raw_length, raw_length & 0xFFu,
-                   (unsigned)microphone_config.p_transfer_rx->p_cfg->p_info->p_src);
-    }
-    rt_kprintf("MIC WARMUP: receiving and discarding startup data; keep quiet\n");
-    result = capture_block("WARMUP", samples, &microphone_config);
-    if (result != TEST_PASS)
-    {
-        goto microphone_close;
-    }
-    print_pcm24_statistics("WARMUP-L", samples, AUDIO_FRAMES, AUDIO_CHANNELS);
-    print_pcm24_statistics("WARMUP-R", samples + 1, AUDIO_FRAMES, AUDIO_CHANNELS);
-    rt_kprintf("MIC countdown: SSI stays open, SSIOFR=%08X LRCONT=%u\n",
-               (unsigned)R_SSI0->SSIOFR, (unsigned)((R_SSI0->SSIOFR >> 8u) & 1u));
-    for (unsigned seconds = 3; seconds > 0; --seconds)
-    {
-        rt_kprintf("MIC recording starts in %u...\n", seconds);
-        result = wait_ms(1000);
-        if (result != TEST_PASS)
-        {
-            goto microphone_close;
-        }
-    }
-    rt_kprintf("MIC RECORD NOW: keep quiet OR sustain AH for this entire half second\n");
-    result = capture_block("RECORD", samples, &microphone_config);
-microphone_close:
     error = R_SSI_Close(&g_i2s0_ctrl);
     if (error != FSP_SUCCESS)
     {
         rt_kprintf("MIC SSI close error=%d\n", error);
         result = -RT_ERROR;
     }
-    rt_kprintf("MIC SSI closed: result=%d\n", result);
-timer_close:
-    if (close_timer("MIC-clock", &g_timer_ctrl) != TEST_PASS)
+    rt_kprintf("MIC RECORD DONE: frames=%u/%u blocks=%u/%u elapsed=%u ms\n",
+               capture_consumed * AUDIO_BLOCK_FRAMES, AUDIO_FRAMES,
+               capture_completed, AUDIO_BLOCK_COUNT,
+               elapsed_ms);
+    rt_kprintf("MIC errors: read=%d overrun=%u early_idle=%u stop=%d idle=%u result=%d\n",
+               capture_read_error, capture_overruns, capture_early_idle,
+               capture_stop_error, capture_idle_events, result);
+clock_close:
+    if (close_timer("MIC", &g_timer_ctrl) != TEST_PASS)
     {
         result = -RT_ERROR;
+    }
+    for (unsigned index = 0; index < 2; ++index)
+    {
+        if (capture_buffers[index].before != AUDIO_GUARD ||
+            capture_buffers[index].after != AUDIO_GUARD)
+        {
+            rt_kprintf("MIC DMA buffer guard corrupted\n");
+            result = -RT_ERROR;
+        }
     }
     return result;
 }
 
-/* 输入已为 PCM16 左声道；只统计并执行原来的去直流、有限增益与淡入淡出。 */
-static int prepare_playback(int16_t *samples)
+/* 先打印逐秒原始统计，再计算播放幅度。所有帧都保存并回放，不丢弃启动段。
+ * 用后 4 秒估计直流与交流峰值，避免启动尖峰把其余录音压到接近无声。
+ * 增益最多 64 倍，最终峰值仍限在参考音曾验收过的 3000，底噪也可能放大。 */
+static void prepare_playback(const uint8_t *samples)
 {
+    for (unsigned second = 0; second < AUDIO_SECONDS; ++second)
+    {
+        const struct capture_statistics *statistics = &capture_statistics[second];
+        int mean = (int)(statistics->sum / statistics->frames);
+        rt_kprintf("MIC second=%u frames=%u L24 min=%d max=%d mean=%d\n",
+                   second + 1u, statistics->frames, statistics->minimum, statistics->maximum, mean);
+        rt_kprintf("MIC second=%u changed_in_blocks=%u near_full=%u R24_peak=%u\n",
+                   second + 1u, statistics->changed, statistics->near_full, statistics->right_peak);
+    }
     int64_t sum = 0;
-    int minimum = INT16_MAX;
-    int maximum = INT16_MIN;
-    unsigned changed = 0;
-    unsigned capture_clipped = 0;
-    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
+    for (unsigned index = AUDIO_SECOND_FRAMES; index < AUDIO_FRAMES; ++index)
     {
-        int sample = samples[index];
-        if (index > 0 && sample != samples[index - 1])
-        {
-            ++changed;
-        }
-        sum += sample;
-        if (sample < minimum)
-        {
-            minimum = sample;
-        }
-        if (sample > maximum)
-        {
-            maximum = sample;
-        }
-        if (sample <= -32760 || sample >= 32760)
-        {
-            ++capture_clipped;
-        }
+        sum += decode_mulaw(samples[index]);
     }
-    int mean = (int)(sum / (int64_t)AUDIO_FRAMES);
-    int peak = maximum - mean;
-    if (mean - minimum > peak)
+    playback_mean = (int)(sum / (AUDIO_FRAMES - AUDIO_SECOND_FRAMES));
+    int peak = 0;
+    for (unsigned index = AUDIO_SECOND_FRAMES; index < AUDIO_FRAMES; ++index)
     {
-        peak = mean - minimum;
-    }
-    rt_kprintf("MIC PCM16 input: frames=%u min=%d max=%d mean=%d ac_peak=%d\n",
-               AUDIO_FRAMES, minimum, maximum, mean, peak);
-    rt_kprintf("MIC PCM16 input: changed=%u clipped=%u\n", changed, capture_clipped);
-    if (peak == 0 || changed == 0)
-    {
-        rt_kprintf("MIC no changing audio; check microphone capture\n");
-        return -RT_ERROR;
-    }
-
-    /* 去除直流偏置后，按峰值调整幅度；最多放大 8 倍，目标峰值保持低幅。
-     * 极弱输入不会被无限放大，最后仍以 AUDIO_SAMPLE_LIMIT 限幅。 */
-    int gain = AUDIO_PLAYBACK_TARGET_PEAK * AUDIO_GAIN_SCALE / peak;
-    if (gain > AUDIO_MAX_GAIN)
-    {
-        gain = AUDIO_MAX_GAIN;
-    }
-    unsigned limited = 0;
-    int output_peak = 0;
-    for (unsigned index = 0; index < AUDIO_FRAMES; ++index)
-    {
-        int sample = ((int)samples[index] - mean) * gain / AUDIO_GAIN_SCALE;
-        if (sample > AUDIO_SAMPLE_LIMIT)
-        {
-            sample = AUDIO_SAMPLE_LIMIT;
-            ++limited;
-        }
-        if (sample < -AUDIO_SAMPLE_LIMIT)
-        {
-            sample = -AUDIO_SAMPLE_LIMIT;
-            ++limited;
-        }
-        /* 开头和结尾各约 10ms 淡入淡出，减小突然启停的爆音。 */
-        if (index < AUDIO_FADE_FRAMES)
-        {
-            sample = sample * (int)index / (int)AUDIO_FADE_FRAMES;
-        }
-        unsigned frames_left = AUDIO_FRAMES - 1u - index;
-        if (frames_left < AUDIO_FADE_FRAMES)
-        {
-            sample = sample * (int)frames_left / (int)AUDIO_FADE_FRAMES;
-        }
-        samples[index] = (int16_t)sample;
-        int magnitude = sample;
+        int magnitude = decode_mulaw(samples[index]) - playback_mean;
         if (magnitude < 0)
         {
             magnitude = -magnitude;
         }
-        if (magnitude > output_peak)
+        if (magnitude > peak)
         {
-            output_peak = magnitude;
+            peak = magnitude;
         }
     }
-    rt_kprintf("AUDIO prepared: gain_q8=%d (256=1x) output_peak=%d limited=%u\n",
-               gain, output_peak, limited);
-    print_pcm_statistics("PREPARED-L", samples, AUDIO_FRAMES, 1);
-    rt_kprintf("AUDIO gain reason: target_peak=3000 max_gain=8x; use WIN-L stats to check startup outliers\n");
-    return TEST_PASS;
+    playback_gain = 0;
+    if (peak > 0)
+    {
+        playback_gain = AUDIO_OUTPUT_LIMIT * AUDIO_GAIN_SCALE / peak;
+        if (playback_gain > AUDIO_MAX_GAIN)
+        {
+            playback_gain = AUDIO_MAX_GAIN;
+        }
+    }
+    rt_kprintf("PCM mu-law mono bytes=%u; stable_mean=%d stable_peak=%d gain_q8=%d\n",
+               AUDIO_FRAMES, playback_mean, peak, playback_gain);
+    rt_kprintf("PCM output limited to +/-3000; silence/noise does not prove a recorded voice\n");
 }
 
-/* GPT2 中断只更新占空比，不分配内存、不输出日志。 */
+/* 逐样本解码、去直流、有限增益、限幅，再做首尾 10ms 淡入淡出。 */
+static int playback_sample(unsigned index)
+{
+    int sample = (decode_mulaw(recording[index]) - playback_mean) * playback_gain / AUDIO_GAIN_SCALE;
+    if (sample > AUDIO_OUTPUT_LIMIT)
+    {
+        sample = AUDIO_OUTPUT_LIMIT;
+        ++playback_limited;
+    }
+    if (sample < -AUDIO_OUTPUT_LIMIT)
+    {
+        sample = -AUDIO_OUTPUT_LIMIT;
+        ++playback_limited;
+    }
+    if (index < AUDIO_FADE_FRAMES)
+    {
+        sample = sample * (int)index / (int)AUDIO_FADE_FRAMES;
+    }
+    unsigned remaining = AUDIO_FRAMES - 1u - index;
+    if (remaining < AUDIO_FADE_FRAMES)
+    {
+        sample = sample * (int)remaining / (int)AUDIO_FADE_FRAMES;
+    }
+    return sample;
+}
+
+/* 录音已关闭，GPT2 中断只访问不可变的录音缓冲，不打印或分配内存。 */
 static void audio_tick(timer_callback_args_t *arguments)
 {
-    int pcm_sample = 0;
+    int sample = 0;
     RT_UNUSED(arguments);
-    if (playback_position < playback_frame_count)
+    if (playback_position < AUDIO_FRAMES)
     {
-
-        /* 线程已完成去直流、幅度调整和限幅，中断直接取单声道样本。 */
-        pcm_sample = playback_samples[playback_position];
-
+        sample = playback_sample(playback_position);
         ++playback_position;
     }
-    /* 两桥臂以 50% 为中心差分输出，限幅避免测试音量过大。 */
-    if (pcm_sample > AUDIO_SAMPLE_LIMIT)
-    {
-        pcm_sample = AUDIO_SAMPLE_LIMIT;
-    }
-    if (pcm_sample < -AUDIO_SAMPLE_LIMIT)
-    {
-        pcm_sample = -AUDIO_SAMPLE_LIMIT;
-    }
-    int duty_offset = pcm_sample * AUDIO_PWM_CENTER_COUNTS / 32768;
-    unsigned duty_a = (unsigned)(AUDIO_PWM_CENTER_COUNTS + duty_offset);
+    int offset = sample * AUDIO_PWM_CENTER / 32768;
+    unsigned duty_a = (unsigned)(AUDIO_PWM_CENTER + offset);
     if (duty_a < playback_duty_min)
     {
         playback_duty_min = duty_a;
@@ -737,58 +560,52 @@ static void audio_tick(timer_callback_args_t *arguments)
     {
         playback_duty_max = duty_a;
     }
-    if (duty_offset != 0)
-    {
-        ++playback_duty_nonzero;
-    }
-    fsp_err_t error = R_GPT_DutyCycleSet(&g_timer6_ctrl,
-                                        AUDIO_PWM_CENTER_COUNTS + duty_offset, GPT_IO_PIN_GTIOCA);
+    fsp_err_t error = R_GPT_DutyCycleSet(&g_timer6_ctrl, duty_a, GPT_IO_PIN_GTIOCA);
     if (error != FSP_SUCCESS)
     {
         playback_error = error;
     }
-    error = R_GPT_DutyCycleSet(&g_timer6_ctrl,
-                             AUDIO_PWM_CENTER_COUNTS - duty_offset, GPT_IO_PIN_GTIOCB);
+    error = R_GPT_DutyCycleSet(&g_timer6_ctrl, AUDIO_PWM_CENTER - offset, GPT_IO_PIN_GTIOCB);
     if (error != FSP_SUCCESS)
     {
         playback_error = error;
     }
 }
 
-/* 参考音和录音共用这一条播放路径；samples 必须有效且 frames>0。
- * 调用者保持缓冲有效，直到本函数停止并关闭采样定时器。 */
-static int play_audio(const char *label, const int16_t *samples, unsigned frames)
+/* 同一 80128 帧以相同采样率回放一次，约 5 秒后停止采样中断和 PWM。 */
+static int play_audio(const uint8_t *samples)
 {
     timer_cfg_t pwm_config = g_timer6_cfg;
-    timer_cfg_t sample_timer_config = g_timer2_cfg;
+    timer_cfg_t sample_config = g_timer2_cfg;
     int result = -RT_ERROR;
     fsp_err_t error;
     rt_tick_t start = rt_tick_get();
-    pwm_config.source_div = TIMER_SOURCE_DIV_1;
-    pwm_config.mode = TIMER_MODE_PERIODIC;
-    pwm_config.period_counts = AUDIO_PWM_PERIOD_COUNTS;
-    pwm_config.duty_cycle_counts = AUDIO_PWM_CENTER_COUNTS;
-    /* GPT2 采样更新率 120MHz/7488，与录音帧率相同。 */
-    sample_timer_config.period_counts = AUDIO_SAMPLE_PERIOD_COUNTS;
-    sample_timer_config.source_div = TIMER_SOURCE_DIV_1;
-    sample_timer_config.mode = TIMER_MODE_PERIODIC;
-    sample_timer_config.duty_cycle_counts = AUDIO_SAMPLE_PERIOD_COUNTS / 2;
-    sample_timer_config.p_callback = audio_tick;
-    playback_samples = samples;
-    playback_frame_count = frames;
+    recording = samples;
     playback_position = 0;
     playback_error = FSP_SUCCESS;
-    playback_duty_min = AUDIO_PWM_CENTER_COUNTS;
-    playback_duty_max = AUDIO_PWM_CENTER_COUNTS;
-    playback_duty_nonzero = 0;
-    print_pcm_statistics(label, samples, frames, 1);
-    rt_kprintf("AUDIO %s start: frames=%u GPT2_period=%u PWM_period=%u\n",
-               label, frames, AUDIO_SAMPLE_PERIOD_COUNTS, AUDIO_PWM_PERIOD_COUNTS);
+    playback_limited = 0;
+    playback_duty_min = AUDIO_PWM_CENTER;
+    playback_duty_max = AUDIO_PWM_CENTER;
+    if (test_cancelled())
+    {
+        result = -RT_EINTR;
+        goto pins;
+    }
     if (configure_audio_pin(BSP_IO_PORT_07_PIN_02) != TEST_PASS ||
         configure_audio_pin(BSP_IO_PORT_07_PIN_03) != TEST_PASS)
     {
+        rt_kprintf("AUDIO pin configuration failed\n");
         goto pins;
     }
+    pwm_config.source_div = TIMER_SOURCE_DIV_1;
+    pwm_config.mode = TIMER_MODE_PERIODIC;
+    pwm_config.period_counts = AUDIO_PWM_PERIOD;
+    pwm_config.duty_cycle_counts = AUDIO_PWM_CENTER;
+    sample_config.source_div = TIMER_SOURCE_DIV_1;
+    sample_config.mode = TIMER_MODE_PERIODIC;
+    sample_config.period_counts = AUDIO_SAMPLE_PERIOD;
+    sample_config.duty_cycle_counts = AUDIO_SAMPLE_PERIOD / 2u;
+    sample_config.p_callback = audio_tick;
     error = R_GPT_Open(&g_timer6_ctrl, &pwm_config);
     if (error != FSP_SUCCESS)
     {
@@ -799,21 +616,21 @@ static int play_audio(const char *label, const int16_t *samples, unsigned frames
     if (error != FSP_SUCCESS)
     {
         rt_kprintf("AUDIO PWM start error=%d\n", error);
-        goto carrier_close;
+        goto pwm_close;
     }
-    error = R_GPT_Open(&g_timer2_ctrl, &sample_timer_config);
+    error = R_GPT_Open(&g_timer2_ctrl, &sample_config);
     if (error != FSP_SUCCESS)
     {
         rt_kprintf("AUDIO sample timer open error=%d\n", error);
-        goto carrier_close;
+        goto pwm_close;
     }
+    rt_kprintf("AUDIO PLAY NOW: replaying the recorded 5 seconds\n");
     start = rt_tick_get();
     error = R_GPT_Start(&g_timer2_ctrl);
     if (error == FSP_SUCCESS)
     {
-        while (playback_position < playback_frame_count &&
-               playback_error == FSP_SUCCESS &&
-               !test_elapsed(start, AUDIO_PLAYBACK_TIMEOUT_MS) && !test_cancelled())
+        while (playback_position < AUDIO_FRAMES && playback_error == FSP_SUCCESS &&
+               !test_cancelled() && !test_elapsed(start, AUDIO_TIMEOUT_MS))
         {
             rt_thread_mdelay(1);
         }
@@ -825,7 +642,7 @@ static int play_audio(const char *label, const int16_t *samples, unsigned frames
         {
             result = -RT_ERROR;
         }
-        else if (playback_position == playback_frame_count)
+        else if (playback_position == AUDIO_FRAMES)
         {
             result = TEST_WAIT;
         }
@@ -838,12 +655,11 @@ static int play_audio(const char *label, const int16_t *samples, unsigned frames
     {
         rt_kprintf("AUDIO sample timer start error=%d\n", error);
     }
-    /* 先停采样更新中断，再关闭 PWM，确保 ISR 不访问已关闭的定时器。 */
     if (close_timer("sample", &g_timer2_ctrl) != TEST_PASS)
     {
         result = -RT_ERROR;
     }
-carrier_close:
+pwm_close:
     if (close_timer("PWM", &g_timer6_ctrl) != TEST_PASS)
     {
         result = -RT_ERROR;
@@ -853,50 +669,23 @@ pins:
     {
         result = -RT_ERROR;
     }
-    rt_kprintf("AUDIO %s output samples=%u/%u pwm_error=%d result=%d\n",
-               label, playback_position, playback_frame_count, playback_error,
-               result);
-    rt_kprintf("AUDIO %s duty_A=%u..%u active_duty_samples=%u elapsed=%u ms\n",
-               label, playback_duty_min, playback_duty_max, playback_duty_nonzero,
-               (unsigned)((rt_tick_get() - start) * 1000u / RT_TICK_PER_SECOND));
-    playback_samples = NULL;
+    recording = NULL;
+    rt_kprintf("AUDIO PLAY DONE: samples=%u/%u elapsed=%u ms pwm_error=%d limited=%u\n",
+               playback_position, AUDIO_FRAMES,
+               (unsigned)((rt_tick_get() - start) * 1000u / RT_TICK_PER_SECOND),
+               playback_error, playback_limited);
+    rt_kprintf("AUDIO duty_A=%u..%u result=%d; listening confirmation required\n",
+               playback_duty_min, playback_duty_max, result);
     return result;
 }
 
-/* 生成 ~501Hz 正弦参考音，复用同一 RAM 和 play_audio，不调用提示音例程。
- * 这样参考音能验证本文件自己的 RAM 读样本、GPT2 中断和 GPT6 输出路径。 */
-static int play_reference(int16_t *samples, const char *label)
-{
-    static const int16_t sine[32] =
-    {
-        0, 585, 1148, 1667, 2121, 2494, 2772, 2942,
-        3000, 2942, 2772, 2494, 2121, 1667, 1148, 585,
-        0, -585, -1148, -1667, -2121, -2494, -2772, -2942,
-        -3000, -2942, -2772, -2494, -2121, -1667, -1148, -585
-    };
-    for (unsigned index = 0; index < AUDIO_REFERENCE_FRAMES; ++index)
-    {
-        int sample = sine[index % 32u];
-        if (index < AUDIO_FADE_FRAMES)
-        {
-            sample = sample * (int)index / (int)AUDIO_FADE_FRAMES;
-        }
-        unsigned remaining = AUDIO_REFERENCE_FRAMES - 1u - index;
-        if (remaining < AUDIO_FADE_FRAMES)
-        {
-            sample = sample * (int)remaining / (int)AUDIO_FADE_FRAMES;
-        }
-        samples[index] = (int16_t)sample;
-    }
-    return play_audio(label, samples, AUDIO_REFERENCE_FRAMES);
-}
-
-/* 倒计时、录音、停声等待、回放；所有阶段使用本次采集的同一个缓冲。 */
+/* 倒计时可被停止命令打断；采集期间不播放提示音，以便独立观察麦克风。 */
 static int run_test(void)
 {
-    if (R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD) != 120000000u)
+    if (R_FSP_SystemClockHzGet(FSP_PRIV_CLOCK_PCLKD) != AUDIO_CLOCK_HZ ||
+        AUDIO_FRAMES != 80128u || AUDIO_FRAMES % AUDIO_BLOCK_FRAMES != 0)
     {
-        rt_kprintf("REPLAY unsupported timer clock; expected PCLKD=120MHz\n");
+        rt_kprintf("REPLAY clock or sample-count configuration unsupported\n");
         return -RT_ERROR;
     }
     int result = mute_output_pins();
@@ -904,88 +693,56 @@ static int run_test(void)
     {
         return result;
     }
-    /* 两侧哨兵帮助检测 DTC/数据处理是否越过缓冲边界，仍保持 4 字节对齐。 */
-    uint32_t *allocation = rt_malloc(AUDIO_CAPTURE_BYTES + 2u * sizeof(uint32_t));
+    uint32_t *allocation = rt_malloc(AUDIO_FRAMES + 2u * sizeof(uint32_t));
     if (allocation == RT_NULL)
     {
-        rt_kprintf("AUDIO allocation failed: need %u bytes including guards\n",
-                   (unsigned)(AUDIO_CAPTURE_BYTES + 2u * sizeof(uint32_t)));
+        rt_kprintf("REPLAY allocation failed: need %u bytes\n", AUDIO_FRAMES + 8u);
         return -RT_ENOMEM;
     }
-    uint32_t *raw_samples = allocation + 1;
-    int16_t *samples = (int16_t *)raw_samples;
-    memset(raw_samples, AUDIO_BUFFER_FILL_BYTE, AUDIO_CAPTURE_BYTES);
-    uint32_t *tail_guard = (uint32_t *)((uint8_t *)samples + AUDIO_CAPTURE_BYTES);
-    allocation[0] = AUDIO_BUFFER_GUARD;
-    *tail_guard = AUDIO_BUFFER_GUARD;
-    rt_kprintf("REPLAY diagnostic v3 PCM24: REF -> WARMUP -> countdown -> RECORD -> REPLAY -> REF\n");
-    rt_kprintf("REPLAY stage 1: reference beep BEFORE; remember whether you hear it\n");
-    result = play_reference(samples, "REF-BEFORE");
-    if (result != TEST_WAIT)
+    uint8_t *samples = (uint8_t *)(allocation + 1);
+    uint32_t *tail = (uint32_t *)(samples + AUDIO_FRAMES);
+    allocation[0] = AUDIO_GUARD;
+    *tail = AUDIO_GUARD;
+    rt_kprintf("REPLAY v4: independent MIC 5s -> recorded playback 5s; RAM mu-law\n");
+    for (unsigned seconds = 3; seconds > 0; --seconds)
     {
-        goto done;
+        rt_kprintf("MIC recording starts in %u...\n", seconds);
+        rt_tick_t start = rt_tick_get();
+        while (!test_elapsed(start, 1000))
+        {
+            if (test_cancelled())
+            {
+                result = -RT_EINTR;
+                goto done;
+            }
+            rt_thread_mdelay(10);
+        }
     }
-    rt_kprintf("REPLAY stage 2: warmup then countdown; keep quiet until recording cue\n");
-    result = capture_audio(raw_samples);
-    if (allocation[0] != AUDIO_BUFFER_GUARD || *tail_guard != AUDIO_BUFFER_GUARD)
+    result = capture_audio(samples);
+    if (allocation[0] != AUDIO_GUARD || *tail != AUDIO_GUARD)
     {
-        rt_kprintf("MIC buffer guard CORRUPTED; aborting before PCM conversion\n");
         result = -RT_ERROR;
-        goto done;
     }
-    rt_kprintf("MIC buffer guards MATCH\n");
-    if (result != TEST_PASS)
+    if (result == TEST_PASS)
     {
-        inspect_capture(raw_samples);
-        goto done;
+        prepare_playback(samples);
+        result = play_audio(samples);
     }
-    rt_kprintf("MIC recording finished; stop speaking. REPLAY stage 3: inspect L/R and prepare\n");
-    inspect_capture(raw_samples);
-    convert_left_pcm24(raw_samples);
-    result = prepare_playback(samples);
-    if (result != TEST_PASS)
-    {
-        rt_kprintf("MIC PCM preparation failed; replay skipped, reference AFTER still runs\n");
-        int diagnostic_result = play_reference(samples, "REF-AFTER");
-        rt_kprintf("REPLAY failed preparation=%d reference_after=%d\n", result, diagnostic_result);
-        goto done;
-    }
-    result = wait_ms(1000);
-    if (result != TEST_PASS)
-    {
-        goto done;
-    }
-    rt_kprintf("REPLAY stage 4: AUDIO REPLAY NOW (recorded LEFT channel)\n");
-    result = play_audio("RECORDED-L", samples, AUDIO_FRAMES);
-    if (result != TEST_WAIT)
-    {
-        goto done;
-    }
-    result = wait_ms(500);
-    if (result != TEST_PASS)
-    {
-        goto done;
-    }
-    rt_kprintf("REPLAY stage 5: reference beep AFTER; compare with the first beep\n");
-    result = play_reference(samples, "REF-AFTER");
 done:
-    if (allocation[0] != AUDIO_BUFFER_GUARD || *tail_guard != AUDIO_BUFFER_GUARD)
+    if (allocation[0] != AUDIO_GUARD || *tail != AUDIO_GUARD)
     {
-        rt_kprintf("REPLAY final buffer guard CORRUPTED\n");
+        rt_kprintf("REPLAY recording buffer guard corrupted\n");
         result = -RT_ERROR;
     }
-    rt_kprintf("REPLAY diagnostic finished result=%d; report both beeps AND recorded voice\n", result);
     rt_free(allocation);
     return result;
 }
 
-/* 本文件唯一线程入口：独立完成初始化、验证和清理，然后自然返回。
- * error 保存最终结果，便于调用方在 RT-Thread 线程回收时读取。 */
+/* 本文件唯一线程入口；总入口负责创建线程与防止例程重叠。 */
 void test_audio_replay_thread(void *argument)
 {
-    int result;
     RT_UNUSED(argument);
-    result = run_test();
+    int result = run_test();
     if (test_cancelled())
     {
         result = -RT_EINTR;
