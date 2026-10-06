@@ -1,5 +1,8 @@
 # 独立 MVP 测试代码结构
 
+2026-10-06 audio-replay v7：以四块环形队列明确DTC与线程所有权，不覆盖未消费块；完成回调先提交下一块Read再唤醒线程，使用RT-Thread中断进出接口保护IPC调度语义。录音阶段提高当前线程优先级并在硬件清理后恢复、销毁静态信号量。GCC优化仅包围实时算法区，不改变其他例程编译设置。新增15组真实C函数ARM检查，含24ms调度延迟后全样本内容/顺序、四块溢出与资源失败清理；30项主机检查、Studio构建通过。独立SWD硬件算法基准与完整应用DWT日志区分记录，均不能代替语音试听；详见`audio-replay.md`。
+
+
 本轮按“一条测试命令、一条新线程、一个独立 C 文件”重构。旧版常驻 `ptest`、共享测试头文件和按阶段分派的大文件已移除。`src/hal_entry.c` 逐字节保留。
 
 ## 从哪里开始阅读
@@ -110,7 +113,7 @@ RW007 联网另有两个只读字符串参数，通过 `rt_thread.user_data` 传
 
 歌曲例程另有 `scripts/validate_audio_song.py`：提取实际 PWM 回调、初始化和清理函数执行 5 组 ARM 模拟检查，包括 EOF、完成、取消/超时、错误注入和关闭顺序。长 PCM 数组位于 `test-audio-song.c` 末尾，转换脚本只更新两对生成标记内的数据；手写硬件逻辑留在文件前部。当前共有 46 个独立例程，详细说明见 `audio-song.md`。
 
-`scripts/validate_audio_replay.py`提取当前v6真实C函数，以Studio ARM GCC编译并在ARM模拟器执行14组检查。覆盖原始BSP时钟39分频、240384原始帧到80128保存样本（独立移位历史对照实际环形FIR）、FIR直流/500Hz保留/16kHz混叠抑制、高通直流/慢漂移、G.711/24位符号、5秒采集/播放、阶段互斥、取消/超时/提前IDLE/溢出/Read与启动失败、哨兵及幅度边界。FSP桩不能代替实物I²S时序与语音试听；13组为历史v5，12组v4、19组v3，当前操作见 `audio-replay.md`。
+`scripts/validate_audio_replay.py`历史v6检查提取当时真实C函数，以Studio ARM GCC编译并在ARM模拟器执行14组检查。覆盖原始BSP时钟39分频、240384原始帧到80128保存样本（独立移位历史对照实际环形FIR）、FIR直流/500Hz保留/16kHz混叠抑制、高通直流/慢漂移、G.711/24位符号、5秒采集/播放、阶段互斥、取消/超时/提前IDLE/溢出/Read与启动失败、哨兵及幅度边界。FSP桩不能代替实物I²S时序与语音试听；13组为历史v5，12组v4、19组v3，当前操作见 `audio-replay.md`。
 
 ```powershell
 python scripts/validate_audio_replay.py --dependencies logs/oled-validation/python

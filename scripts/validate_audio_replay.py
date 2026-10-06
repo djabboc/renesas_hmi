@@ -42,10 +42,16 @@ STUB = r'''#include <stdint.h>
 #define RT_ENOMEM 12
 #define RT_ETIMEOUT 2
 #define RT_TICK_PER_SECOND 1000
+#define RT_EOK 0
+#define RT_IPC_FLAG_FIFO 0
+#define RT_THREAD_CTRL_CHANGE_PRIORITY 1
 #define TEST_PASS 0
 #define TEST_WAIT 1
 #define FSP_SUCCESS 0
 #define FSP_PRIV_CLOCK_PCLKD 0
+#define FSP_PRIV_CLOCK_ICLK 1
+#define CoreDebug_DEMCR_TRCENA_Msk (1u << 24)
+#define DWT_CTRL_CYCCNTENA_Msk 1u
 #define GPT_IO_PIN_GTIOCA 0
 #define GPT_IO_PIN_GTIOCB 1
 #define TIMER_SOURCE_DIV_1 0
@@ -62,6 +68,50 @@ STUB = r'''#include <stdint.h>
 #define BSP_IO_PORT_07_PIN_03 0x703
 #define __DMB() __asm volatile ("" ::: "memory")
 typedef unsigned rt_tick_t;
+typedef uint8_t rt_uint8_t;
+struct rt_thread { rt_uint8_t current_priority; };
+typedef struct rt_thread *rt_thread_t;
+struct rt_semaphore { unsigned active, value; };
+static struct rt_thread mock_thread = {21};
+static struct { unsigned DEMCR; } mock_debug;
+static struct { unsigned CTRL, CYCCNT; } mock_dwt;
+#define CoreDebug (&mock_debug)
+#define DWT (&mock_dwt)
+static unsigned semaphore_active, semaphore_fail, priority_fail, priority_calls, irq_nest, ipc_error, wake_delay;
+static void rt_thread_mdelay(unsigned ms);
+static unsigned rt_tick_from_millisecond(unsigned ms) { return ms; }
+static rt_thread_t rt_thread_self(void) { return &mock_thread; }
+static int rt_thread_control(rt_thread_t thread, unsigned command, void *value)
+{
+    ++priority_calls;
+    if (priority_calls == priority_fail) { return -RT_ERROR; }
+    thread->current_priority = *(rt_uint8_t *)value;
+    return RT_EOK;
+}
+static void rt_interrupt_enter(void) { ++irq_nest; }
+static void rt_interrupt_leave(void) { --irq_nest; }
+static int rt_sem_init(struct rt_semaphore *sem, const char *name, unsigned value, unsigned flag)
+{
+    if (semaphore_fail) { return -RT_ERROR; }
+    sem->active = 1; sem->value = value; semaphore_active = 1;
+    return RT_EOK;
+}
+static int rt_sem_release(struct rt_semaphore *sem)
+{
+    if (!sem->active || irq_nest != 1) { ++ipc_error; }
+    ++sem->value; return RT_EOK;
+}
+static int rt_sem_take(struct rt_semaphore *sem, unsigned timeout)
+{
+    if (wake_delay) { unsigned delay = wake_delay; wake_delay = 0; rt_thread_mdelay(delay); }
+    for (unsigned wait = 0; sem->value == 0 && wait < timeout; ++wait) { rt_thread_mdelay(1); }
+    if (sem->value == 0) { return -RT_ETIMEOUT; }
+    --sem->value; return RT_EOK;
+}
+static int rt_sem_detach(struct rt_semaphore *sem)
+{
+    sem->active = 0; semaphore_active = 0; return RT_EOK;
+}
 typedef int fsp_err_t;
 typedef struct { unsigned event; } i2s_callback_args_t;
 typedef struct { unsigned unused; } timer_callback_args_t;
@@ -187,13 +237,14 @@ static void rt_thread_mdelay(unsigned ms)
     for (unsigned step = 0; step < ms; ++step)
     {
         ++clock_ms;
+        DWT->CYCCNT += 120000;
         if (ssi_idle_pending && !ssi_no_idle && ssi_callback)
         {
             ssi_idle_pending = 0; i2s_callback_args_t event = {I2S_EVENT_IDLE}; ssi_callback(&event);
         }
         capture_phase += 120000;
         unsigned frames = capture_phase / 2496; capture_phase %= 2496;
-        if (ssi_burst) { frames = 768; }
+        if (ssi_burst) { frames = 1536; }
         mock_capture_step(frames);
         playback_phase += 120000;
         frames = playback_phase / 7488; playback_phase %= 7488;
@@ -240,11 +291,15 @@ static void reset(void)
     g_timer_ctrl.open = 0; g_timer_ctrl.running = 0;
     g_timer2_ctrl.open = 0; g_timer2_ctrl.running = 0;
     g_timer6_ctrl.open = 0; g_timer6_ctrl.running = 0; g_i2s0_ctrl.open = 0;
+    mock_thread.current_priority = 21; semaphore_active = 0; semaphore_fail = 0;
+    priority_fail = 0; priority_calls = 0; irq_nest = 0; ipc_error = 0; wake_delay = 0;
+    DWT->CYCCNT = 0;
 }
 static int hardware_closed(void)
 {
     return !g_i2s0_ctrl.open && !g_timer_ctrl.open && !g_timer2_ctrl.open &&
-           !g_timer6_ctrl.open && !ssi_active && !sample_callback;
+           !g_timer6_ctrl.open && !ssi_active && !sample_callback && !semaphore_active &&
+           mock_thread.current_priority == 21 && irq_nest == 0 && ipc_error == 0;
 }
 void validate(void)
 {
@@ -267,11 +322,13 @@ void validate(void)
     ++tests_passed;
 
     reset(); uint8_t *samples = (uint8_t *)(payload + 1);
+    wake_delay = 24; /* 延迟调度三块：队列保留内容，仍必须全部按序处理。 */
     payload[0] = AUDIO_GUARD; payload[(AUDIO_FRAMES + 4) / 4] = AUDIO_GUARD;
     CHECK(capture_audio(samples) == TEST_PASS);
     CHECK(capture_completed == 626 && capture_consumed == 626 && ssi_reads == 626);
     CHECK(ssi_stops == 1 && ssi_closes == 1 && capture_overruns == 0 && capture_early_idle == 0);
     CHECK(absolute_frame == AUDIO_CAPTURE_FRAMES && clock_ms >= 5000 && clock_ms <= 5002 && hardware_closed());
+    CHECK(capture_pending_peak == 3 && capture_wait_max_cycles >= 1600000);
     int previous_input = 0;
     int previous_output = 0;
     int reference_history[31] = {0};
@@ -330,15 +387,17 @@ void validate(void)
     {
         reset(); cancel_at = cancel_times[index];
         CHECK(run_test() == -RT_EINTR && hardware_closed() && malloc_calls == free_calls);
-        CHECK(clock_ms <= cancel_at + 2 && overlap == 0);
+        CHECK(clock_ms <= cancel_at + 12 && overlap == 0);
     }
     ++tests_passed;
 
     reset(); ssi_freeze = 1; CHECK(capture_audio(samples) == -RT_ETIMEOUT);
-    CHECK(clock_ms <= 6502 && hardware_closed());
+    CHECK(clock_ms <= 6512 && hardware_closed());
     reset(); ssi_early_idle = 1; CHECK(capture_audio(samples) == -RT_ERROR && hardware_closed());
     reset(); ssi_burst = 1; CHECK(capture_audio(samples) == -RT_EFULL);
-    CHECK(capture_overruns == 1 && ssi_reads == 2 && hardware_closed());
+    CHECK(capture_overruns == 1 && ssi_reads == 4 && hardware_closed());
+    reset(); wake_delay = 34; CHECK(capture_audio(samples) == -RT_EFULL);
+    CHECK(capture_pending_peak == 4 && ssi_reads == 4 && hardware_closed());
     ++tests_passed;
 
     const unsigned read_failures[] = {1, 5, 626};
@@ -453,6 +512,14 @@ void validate(void)
     }
     CHECK(lowpass_voice_peak > 7800 && lowpass_voice_peak < 8400);
     ++tests_passed;
+
+    reset(); semaphore_fail = 1;
+    CHECK(capture_audio(samples) == -RT_ERROR && operations == 0 && hardware_closed());
+    reset(); priority_fail = 1;
+    CHECK(capture_audio(samples) == -RT_ERROR && operations == 0 && hardware_closed());
+    reset(); pin_error = -RT_ERROR;
+    CHECK(capture_audio(samples) == -RT_ERROR && priority_calls == 2 && hardware_closed());
+    ++tests_passed;
 }
 '''
 
@@ -471,7 +538,7 @@ def main() -> int:
     definitions = source[source.index("#define AUDIO_CLOCK_HZ"):source.index("/* 24 位数据右对齐")]
     functions = "\n".join(extract_function(source, name) for name in (
         "pcm24_signed", "encode_mulaw", "decode_mulaw", "stop_capture", "mic_callback", "filter_microphone", "filter_downsample",
-        "consume_block", "wait_capture_idle", "close_timer", "capture_audio", "prepare_playback",
+        "consume_block", "wait_capture_idle", "close_timer", "capture_samples", "capture_audio", "prepare_playback",
         "playback_sample", "audio_tick", "play_audio", "run_test"))
     output = ROOT / "logs/audio-validation"
     output.mkdir(parents=True, exist_ok=True)
@@ -497,9 +564,9 @@ def main() -> int:
     machine.emu_start(symbols["validate"] | 1, 0xFFF00, timeout=60000000)
     error = int.from_bytes(machine.mem_read(symbols["test_error"], 4), "little")
     passed = int.from_bytes(machine.mem_read(symbols["tests_passed"], 4), "little")
-    if error or passed != 14:
-        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/14")
-    print("PASS: 14 ARM groups; original BSP 3.077MHz, 48k capture / 16k playback, FIR resampling, high-pass, G.711, 5s duration/errors/guards/cleanup")
+    if error or passed != 15:
+        raise RuntimeError(f"Audio validation failed: C line={error}, groups={passed}/15")
+    print("PASS: 15 ARM groups; queued 48k capture / 16k playback, delayed scheduling/content order, overflow, IPC/priority cleanup, FIR/high-pass/G.711, 5s lifecycle")
     return 0
 
 

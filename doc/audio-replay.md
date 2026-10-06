@@ -1,8 +1,8 @@
 # 录音回放逐步排查：audio-replay
 
-日期：2026-10-06。当前为v6：独立麦克风采集5秒，关闭采集硬件，再回放5秒。v5持续说话只听到沙沙声，安静/说话的稳定幅度几乎相同；v6恢复原始BSP约3.077MHz麦克风时钟、约48kHz采样，低通三抽一后仍保存/播放约16kHz语音。历史日志保留在下方，语音回放仍待人工验收。
+日期：2026-10-06。当前为v7：独立麦克风采集5秒，关闭采集硬件，再回放5秒。v5持续说话只听到沙沙声，安静/说话的稳定幅度几乎相同；v6恢复原始BSP约3.077MHz麦克风时钟、约48kHz采样，低通三抽一后仍保存/播放约16kHz语音。v6板上两轮发生队列溢出，未进入回放；v7修复处理余量与唤醒调度，语音回放仍待人工验收。
 
-## 当前 v6：恢复麦克风时钟，录音5秒、回放5秒
+## 当前 v7：修复采集溢出，录音5秒、回放5秒
 
 J8沿用已连接的JBL 4Ω C11R。执行：
 
@@ -22,11 +22,11 @@ hmi_test audio-replay
 
 SSI使用24位PCM、32位时隙、4字节FIFO/DTC，每帧两声道。GPT1恢复原始BSP的period_counts=39、duty_cycle_counts=19，位时钟120MHz/39约3.077MHz，双声道每帧64个时钟，原始帧率约48076.92Hz。采集240384帧，低通后每3帧保存1样本，得到80128个约16025.64Hz的单声道样本；GPT2周期仍为7488。采集与播放理论时长均4.999987秒。
 
-原始48kHz五秒双声道需要1923072字节；完整16kHz PCM16单声道仍需要160256字节，超出现有空闲堆。本版本逐块提取左声道，在24位精度执行约40Hz高通，再使用31点对称FIR低通、三抽一；除以32后用G.711 mu-law保存，每样本1字节，共80128字节，堆申请80136字节含哨兵。低通采用Blackman窗、截止约5kHz，系数和32768，1kHz增益约1、8kHz约0.017，降低下采样混叠；64位乘加避免溢出。每个DTC缓冲384原始帧/3072字节，两缓冲含哨兵共6160字节静态RAM，不依赖SD卡。相对v4除以256，存储多保留3位弱信号；mu-law编码限幅到±32635，按秒统计storage_clipped。
+原始48kHz五秒双声道需要1923072字节；完整16kHz PCM16单声道仍需要160256字节，超出现有空闲堆。本版本逐块提取左声道，在24位精度执行约40Hz高通，再使用31点对称FIR低通、三抽一；除以32后用G.711 mu-law保存，每样本1字节，共80128字节，堆申请80136字节含哨兵。低通采用Blackman窗、截止约5kHz，系数和32768，1kHz增益约1、8kHz约0.017，降低下采样混叠；64位乘加避免溢出。每个DTC缓冲384原始帧/3072字节，四块环形缓冲含哨兵共12320字节静态RAM，不依赖SD卡。相对v4除以256，存储多保留3位弱信号；mu-law编码限幅到±32635，按秒统计storage_clipped。
 
 高通递推调整为 `y[n] = x[n] - x[n-1] + (191/192)*y[n-1]`，适配约48kHz输入，截止仍约40Hz。高通与FIR状态跨块保持、每次录音置零。滤波不能恢复原本没有录到的人声，不能据此宣称麦克风故障已解决。
 
-每块384原始帧/3072字节产生128保存样本，625次回调提交下一个Read，第626块完成后才Stop。FSP允许在RX_FULL回调提交下一次接收，块间不Stop/Open；线程处理上一块，中断交替使用另一块。两个块均未消费就需要复用时报告overrun，不静默覆盖。采样中断不打印、分配内存或执行滤波/编码。
+每块384原始帧/3072字节产生128保存样本，625次回调提交下一个Read，第626块完成后才Stop。FSP允许在RX_FULL回调提交下一次接收，块间不Stop/Open；完成中断唤醒线程，线程依序处理已完成块，中断把下一次接收交给队列空闲块。队列最多容纳一块正在写入和三块正在处理或待处理的数据；完成未消费块达到四块、没有空闲块时报告overrun，不静默覆盖。采样中断不打印、分配内存或执行滤波/编码。
 
 ### 日志与播放处理
 
@@ -40,13 +40,61 @@ SSI使用24位PCM、32位时隙、4字节FIFO/DTC，每帧两声道。GPT1恢复
 
 全部逻辑位于 `src/test/test-audio-replay.c`，保留唯一线程入口，不包含MSH注册、创建线程或跨例程调用；`src/test-main.c`保持串行调度，`src/hal_entry.c`和原独立audio-mic未修改。
 
-`validate_audio_replay.py`提取真实C函数，在ARM模拟器执行14组检查。覆盖240384原始帧到80128保存样本的完整顺序与内容（独立移位历史对照实际环形FIR）、两阶段5秒时长、FIR直流增益/500Hz保留/16kHz混叠抑制、高通直流衰减、G.711、符号扩展、互斥阶段、取消/超时/溢出/Read与启动失败、哨兵、幅度边界和清理。14组ARM及30项主机检查通过，记录 `logs/audio-replay-clock-arm.log`、`logs/audio-replay-clock-host-tests.log`；桩不替代真实I²S时序与语音试听。
+`validate_audio_replay.py`提取真实C函数，在ARM模拟器执行15组检查。新增24ms调度延迟后全部样本内容/顺序保持、34ms延迟与四块突发溢出保护、信号量与临时优先级清理检查。覆盖240384原始帧到80128保存样本的完整顺序与内容（独立移位历史对照实际环形FIR）、两阶段5秒时长、FIR直流增益/500Hz保留/16kHz混叠抑制、高通直流衰减、G.711、符号扩展、互斥阶段、取消/超时/溢出/Read与启动失败、哨兵、幅度边界和清理。15组ARM及30项主机检查通过，记录 `logs/audio-replay-overrun-arm.log`、`logs/audio-replay-overrun-host-tests.log`；桩不替代真实I²S时序与语音试听。
 
-v6构建0 errors/0 warnings，Flash1156036字节、静态RAM536072字节；DAP-LINK/PyOCD成功烧录1156112字节，退出码0，记录 `logs/audio-replay-clock-build.log`、`logs/audio-replay-clock-flash.log`。请确认启动日志为REPLAY v6、BCLK=3076923Hz，录音期间对着板载MIC约5～10cm持续说话，提交完整日志与语音是否可辨认的听感。板上实际48kHz连续性、录音内容与声音仍待复验。
+v6构建0 errors/0 warnings，Flash1156036字节、静态RAM536072字节；DAP-LINK/PyOCD成功烧录1156112字节，退出码0，记录 `logs/audio-replay-clock-build.log`、`logs/audio-replay-clock-flash.log`。此为v6历史交付结果；随后两轮实物溢出失败，见下方原始日志。
 
 v5历史构建：Studio编译0 errors/0 warnings，Flash1155332字节、静态RAM531848字节；DAP-LINK/PyOCD烧录1155344字节成功，退出码0，记录 `logs/audio-replay-highpass-build.log`、`logs/audio-replay-highpass-flash.log`。随后两轮用户日志显示未录到可辨认的人声，详见下方。助手不占用COM8。
 
 v4历史构建：Studio编译0 errors/0 warnings，Flash1154804字节、静态RAM531720字节。DAP-LINK/PyOCD成功烧录1154832字节，退出码0；记录 `logs/audio-replay-5s-build.log`、`logs/audio-replay-5s-flash.log`。用户随后实测各5秒计时与全部帧完成，但持续发声仍无声，见下方原始日志。
+
+### v7 处理余量和调度修复（2026-10-06）
+
+v6每块输入间隔7987.2µs，工程以`-O0`构建。通过SWD在实际Cortex-M4 SRAM运行真实统计/FIR/mu-law处理函数（32块伪随机24位数据，关闭中断），测得`-O0`最大738198周期/6151.6µs，平均6146.1µs；`-O2`最大224373周期/1869.8µs，平均1866.6µs。此测量只验证算法吞吐量，不包含Flash取指、DTC或RTOS抢占，也不能证明已录到人声。脚本`scripts/benchmark_audio_replay.py`不打开COM8，结束或执行失败后复位回Flash固件；运行时会暂停应用，请勿与其他测试同时执行。日志`logs/audio-replay-overrun-benchmark-v7.log`。
+
+v7对实时运算区局部使用GCC `-O2`，区外及整个工程仍保留原编译设置。双缓冲改为四块环形队列，额外静态RAM6160字节。录音阶段暂时把当前测试线程优先级从21提高到14（数字越小优先级越高），硬件清理后恢复进入录音前的优先级；不创建第二个线程。RX_FULL先提交下块接收，再释放信号量唤醒线程，替代1ms轮询；等待上限10ms以便检查停止/超时。FSP SSI ISR没有RT-Thread中断进出调用，回调内在使用内核IPC前补齐`rt_interrupt_enter/leave`。采集结束关闭SSI后才销毁信号量。
+
+新增`MIC timing`打印每块最大/平均处理微秒数和从完成到处理的最大等待时间，DWT计时包含真实运行时的抢占；`MIC queue peak`包含正在处理的块。块间隔约7987µs，正常期望处理时间小于该间隔、队列峰值小于4、overrun=0。信号量计数只负责唤醒，完成/消费索引才决定数据所有权；完整内容检查验证不会因合并唤醒而漏块。
+
+v7 Studio构建0 errors/0 warnings，Flash1156412字节、静态RAM542280字节；日志`logs/audio-replay-overrun-build.log`。DAP-LINK/PyOCD已成功烧录1156496字节、退出码0，日志`logs/audio-replay-overrun-flash.log`。15组ARM与30项主机检查通过；ARM模拟器的处理瞬时完成，因此模拟检查验证内容/生命周期，耗时结论来自上述硬件基准。真实RTOS下的持续采集与语音试听待用户执行`hmi_test audio-replay`，确认REPLAY v7，再提供完整日志和听感。不得把修复溢出等同于语音验收通过。
+
+### v6 两轮采集失败原始日志
+
+用户两轮均在采集阶段队列溢出，处理完成块44/278，接收完成块46/280。尚未进入播放，不能用这两轮判断48kHz时钟下的语音质量。
+
+```text
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >REPLAY v6: independent MIC 5s at ~48k -> playback 5s at ~16k; original BSP clock
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC BCLK=3076923 Hz rate~48077; GPT1 period=39 (original BSP clock)
+MIC PCM24 slot32; 240384 frames, 626 blocks of 384 frames; output mono mu-law
+MIC filter: high-pass ~40Hz at PCM24; storage divisor=32
+MIC resample: FIR 31 taps ~5kHz; 3 input frames -> 1 stored sample
+MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE
+MIC RECORD DONE: frames=16896/240384 blocks=46/626 elapsed=361 ms
+MIC errors: read=0 overrun=1 early_idle=0 stop=0 idle=1 result=-3
+TEST RESULT audio-replay FAIL code=-3 elapsed=3423 ms
+TEST IDLE
+
+msh >hmi_test audio-replay
+TEST BEGIN audio-replay
+msh >REPLAY v6: independent MIC 5s at ~48k -> playback 5s at ~16k; original BSP clock
+MIC recording starts in 3...
+MIC recording starts in 2...
+MIC recording starts in 1...
+MIC BCLK=3076923 Hz rate~48077; GPT1 period=39 (original BSP clock)
+MIC PCM24 slot32; 240384 frames, 626 blocks of 384 frames; output mono mu-law
+MIC filter: high-pass ~40Hz at PCM24; storage divisor=32
+MIC resample: FIR 31 taps ~5kHz; 3 input frames -> 1 stored sample
+MIC RECORD NOW: 5 seconds; speak continuously until RECORD DONE
+MIC RECORD DONE: frames=106752/240384 blocks=280/626 elapsed=2230 ms
+MIC errors: read=0 overrun=1 early_idle=0 stop=0 idle=1 result=-3
+TEST RESULT audio-replay FAIL code=-3 elapsed=5292 ms
+TEST IDLE
+```
 
 ### 时钟排查依据及证据范围
 
