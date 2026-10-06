@@ -38,6 +38,23 @@ python scripts/audio_raw_to_wav.py --port COM8 --output logs/mic-voice
 
 脚本默认不打开串口，只有你明确传入`--port`时才打开。不会自动播放WAV。若COM8被占用，Windows拒绝打开，测试命令不会发送。
 
+## 外部1kHz参考音测试
+
+`--output`只指定文件名，不会播放声音。参考音必须先由电脑或手机的外部扬声器实际播放，不能仅执行采集命令。
+
+1. 打开`logs/mic-reference-1000hz.wav`，在播放器中启用循环播放。文件长12秒，是连续的1kHz提示音；保持适中的音量。
+2. 将外部扬声器放在U9麦克风拾音孔附近约5～10cm，确认在板旁能清楚听到该音，期间不说话。
+3. 关闭占用COM8的串口助手，在项目根目录执行下面的命令。保持参考音播放，覆盖倒计时和`MIC RECORD NOW`到`MIC RECORD DONE`的全部5秒。
+
+```powershell
+python scripts/audio_raw_to_wav.py --port COM8 --output logs/mic-reference-test-01
+```
+
+4. 出现`MIC RECORD DONE`后停止外部参考音，继续等待约20秒导出结束。生成WAV/JSON/PNG后脚本释放COM8。
+5. 告诉助手采集完成，并确认参考音在上述5秒内持续可听。助手直接读取本机输出，检查CRC、原始频谱与安静轮的1kHz附近差别。
+
+复测时将末尾编号改为02、03，避免覆盖前一次记录。仅看到“采集完成”或文件名含tone不足以判定录到了参考音；缺少明显峰也不能单独认定麦克风损坏。
+
 ## 另一种操作：自己保存终端日志
 
 在115200、8N1的串口助手中，分别保存安静和发声两次完整文本日志。每轮执行：
