@@ -22,6 +22,7 @@
 !/doc/audio-debug-handoff.md
 !/doc/audio-official-review.md
 !/doc/audio-fifo.md
+!/doc/audio-debug-closed.md
 /logs
 /workspace
 /RTE

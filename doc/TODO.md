@@ -2,15 +2,9 @@
 
 更新日期：2026-10-07。用于记录验收过程中暂缓的事项；完整测试范围与已有证据见 `peripheral-test-taskbook.md` 和 `peripheral-test-results.md`。
 
-2026-10-07 曾按用户要求暂停音频调试，随后恢复；证据与续调入口见 [audio-debug-handoff.md](audio-debug-handoff.md)。
+2026-10-07 用户明确终止麦克风录音排查，相关复测和SSI参数对照已移出主动待办。最终状态为“终止排查、语音未通过、根因未确定”，详见 [audio-debug-closed.md](audio-debug-closed.md)。
 
-用户提供 mic-record-03：完整导出 CRC=8F04B421、WAV字节匹配，仍只有沙沙声。已完成官方BSP/上游源码及瑞萨SSI示例对照，没有确认可直接修复的驱动或配置差异；最新进展见 [audio-official-review.md](audio-official-review.md)。用户反对2～3cm验收前提，已取消；下一项为正常说话距离下的 [CPU直读FIFO对照](audio-fifo.md)。
-
-## 音频输出：歌曲验收通过，录音回放恢复排查
-
-- [ ] 按用户要求进行BCKP单变量A/B：A组官方极性已失败，B组clock-invert工具和板端流程已验证；待用户执行 `python scripts/audio_fifo_to_mp3.py --run --variant clock-invert --output logs/mic-clock-invert-01` 并试听。只有辨认人声且复测改善可重复，才修改生产例程；操作与寄存器判据见 [audio-fifo.md](audio-fifo.md)。
-
-- [ ] CPU直读SSI FIFO对照：用户mic-fifo-01反馈仍只有沙沙声。完整保存240384帧、SSISR=0、CRC=5B597EDC，WAV与SWD整段匹配，试听增益213.15倍；退出复位原固件。绕过DTC/队列/滤波/降采样后仍未录到可辨认人声，重点转向U9输出及SSI接收条件，尚未确定具体根因；证据见 [audio-fifo.md](audio-fifo.md)。
+## 音频：输出已通过，麦克风排查已终止
 
 2026-10-06 用户确认 J8 已连接 JBL 4Ω、标识 C11R 的喇叭。已执行低幅提示音：8000/8000 样本，509 ms，WAIT/IDLE；用户确认“听到了，声音正常”，低幅提示音验收通过，旧版录音回放虽板端完成（8192/8192，1057 ms），用户自行复测反馈“没有听到自己的声音”。已改进倒计时、录音窗口、停声间隔及幅度处理。用户随后暂停录音回放，改为先验收新增歌曲播放例程。
 
@@ -19,11 +13,10 @@
 - [ ] 断电后将喇叭两线接在 J8 两针之间，检查无短路。两针都是桥臂输出，不接地、不外加电源、不连接 CANH/CANL。
 - [x] `hmi_test audio-tone`：8000/8000 样本，509 ms，用户确认有声且正常，低幅提示音验收通过。
 - [x] `hmi_test audio-song`：用户确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，默认歌曲播放验收通过；日志见 `audio-song.md` 和 `peripheral-test-results.md`。
-- [ ] `hmi_test audio-replay`：v7已完整录5秒/播5秒、overrun=0，用户持续说话仍只有沙沙声。语音未验收，优先核验稳定阶段的原始采集内容与麦克风/I2S输入；后续已按用户授权新增独立`audio-raw`，两轮原始WAV/波形已对照，CRC和采集完整，但100～8000Hz幅度仅增加0.215dB；后续mic-tone轮用户确认未播放参考音，不能视为受控测试；按用户最新要求新增audio-record完整语音录音→电脑MP3试听，先判断人声是否正常，不要求外部参考音；之后依据实际录音排查U9/SSI输入；操作见`audio-raw.md`，此前分析见`audio-replay-v7-analysis.md`。
-- [ ] `hmi_test audio-record`：新例程已构建/烧录；用户mic-record-02完整5秒PCM导出和MP3生成通过，CRC=8B437AD7、无溢出/限幅，持续说话但电脑MP3只有沙沙声，人声未通过。后续用SWD临时采样SCK/WS/SD，生产WS配置下SD独立解码与SSI FIFO左声道10/10逐字匹配；已复位原固件，不打开COM8。用户没有逻辑分析仪、示波器或万用表，已取消2～3cm录音前提，下一项CPU直读FIFO对照；供电/器件仍未验证；结果与位置图见`audio-wire-check.md`，录音操作见`audio-record.md`。
-- [x] 将提示音与歌曲日志、人工试听结论补入 `peripheral-test-results.md`；录音回放已恢复排查，继续保留未验收状态。
+- **已终止（未通过）**：audio-replay、audio-raw、audio-record、CPU直读FIFO和BCKP对照的后续麦克风排查。已有录音仅有无声或沙沙声；不再安排重复录音或参数调整，历史证据与工具保留。
+- [x] 将提示音与歌曲日志、人工试听结论及麦克风终止决定补入 `peripheral-test-results.md`。
 
-接口位置、针脚和电路依据见 `peripheral-tests.md` 的音频章节。麦克风采样及基本安静/发声对照已完成；低幅扬声器提示音和默认歌曲已通过人工试听，录音回放诊断版待用户复测。
+接口位置、针脚和电路依据见 `peripheral-tests.md` 的音频章节。低幅扬声器提示音和默认歌曲已通过人工试听；麦克风语音采集和录音回放未通过，已按用户决定终止。
 
 ## CAN 外部收发：等待对端设备
 
@@ -36,7 +29,7 @@
 
 ## 已完成的验收收尾
 
-当前仅保留音频输出/录音回放、CAN 外部收发两类待办。音频连接物料已就绪，正在验收；CAN 仍等待对端。以下收尾项目已完成。
+麦克风相关待办已终止归档；CAN外部收发仍等待对端，既有喇叭资料与接线核对项保留。以下收尾项目已完成。
 
 - [x] **USB 跨包回显**：用户128字节00～7F的TX/RX逐字节一致；板端累计收发均2304字节、正常退出。主机只提供一组记录，未宣称全部2304字节已比对。
 - [x] **USB 物理拔插**：用户在同一30秒窗口内拔插系统USB，前后各4字节原样回显；mounted_events=2，rx/tx=8，总耗时30341 ms，无重启日志，验收通过。覆盖一次循环，未声称长期拔插压力通过。

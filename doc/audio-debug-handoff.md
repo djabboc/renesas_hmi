@@ -1,4 +1,6 @@
-# 音频调试总结与续调入口
+# 音频调试历史归档（已终止）
+
+**终止归档（2026-10-07）：用户明确放弃麦克风录音及回放排查。语音未通过、根因未确定；不再要求录音、复测或参数调整。以下方法、命令和待验证分支仅为历史记录；最终状态见 [audio-debug-closed.md](audio-debug-closed.md)。**
 
 最新结果：用户mic-fifo-01直接FIFO录音仍只有沙沙声，完整帧数、SSI状态、WAV字节检查通过，CRC=5B597EDC。DTC/队列/滤波/降采样绕过后人声仍未通过，排查重点转向U9输出及SSI接收条件；具体根因未确定，详见 [audio-fifo.md](audio-fifo.md) 最后一节。下文CPU对照操作保留作方法记录，不要求重复同一轮测试。
 
@@ -52,7 +54,7 @@ SWD 临时 SRAM 程序同时读取三根线的 GPIO 输入。最终使用与生�
 
 方法、逐字表及位置图见 [audio-wire-check.md](audio-wire-check.md)，本机原始证据位于 `logs/audio-wire-check/`。其中临时程序依赖当前 ELF 的 Flash 函数地址，不能直接用于其他固件版本。每轮退出均复位，当前运行的是原 Flash 固件。
 
-## 当前续调步骤
+## 终止前的续调方法（不再执行）
 
 用户此前描述在正面、10cm 内持续说话，实际录音仍只有噪声。用户明确反对以2～3cm为验收条件；该前提已取消，按正常说话距离录不到人声继续排查。下面的位置图仅帮助识别U9，不要求再用贴近录音代替软件排查。
 
@@ -68,13 +70,13 @@ python scripts/audio_fifo_to_mp3.py --run --output logs/mic-fifo-01
 
 按声音内容决定方向：若能辨认人声，回查DTC/队列及生产录音的处理流程；若仍只有噪声，说明去掉这些环节后现象仍在，继续检查SSI之前的数字与声学链路。用户没有逻辑分析仪、示波器或万用表，现有软件证据不能确定供电、器件或完整时序正常，也不能下损坏结论。
 
-## 续调约定与工程状态
+## 历史约定与工程状态
 
 - 用户自行运行串口录音脚本；助手不自动打开 COM8。
 - 依据新证据修改代码，不重复盲调滤波、增益和寄存器。
 - `src/hal_entry.c` 保留原样；各测试为独立单 C 文件、一个线程入口，MSH 统一在 `src/test-main.c`，线程禁止重叠。
 - 保持初学者可读的注释与统一风格；日志和人工试听结果写入文档并提交 Git。
 - 当前生产录音例程由提交 `f9c3600` 加入；`5db29c9` 只修复电脑脚本串口失败时留下空日志的问题；`8171dbc` 归档数字诊断和位置图，未改固件。
-- 其他仍保留的外设待办为 CAN 外部收发，等待对端设备；本次暂停不改变该待办。RTC 长时间精度测试已按用户要求取消。
+- 其他仍保留的外设待办为 CAN 外部收发，等待对端设备；本次终止不改变该待办。RTC 长时间精度测试已按用户要求取消。
 
 详细记录入口：[TODO.md](TODO.md)、[peripheral-test-results.md](peripheral-test-results.md)、[audio-replay.md](audio-replay.md)、[audio-raw-results.md](audio-raw-results.md)、[audio-record.md](audio-record.md)、[audio-wire-check.md](audio-wire-check.md)。

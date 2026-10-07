@@ -1,8 +1,10 @@
 # CPU直读SSI FIFO录音对照
 
+**终止归档（2026-10-07）：用户明确放弃麦克风录音及回放排查。语音未通过、根因未确定；不再要求录音、复测或参数调整。以下方法、命令和待验证分支仅为历史记录；最终状态见 [audio-debug-closed.md](audio-debug-closed.md)。**
+
 日期：2026-10-07。用户在正常距离持续说话，audio-record导出的MP3仍只有沙沙声。2～3cm不作为验收前提。本对照保留官方麦克风时钟与SSI格式，绕过自写连续录音的DTC、RT-Thread队列、板端滤波和降采样，检查去掉这些环节后能否录到人声。
 
-最新方向：用户要求“二分法调整”，新增baseline/clock-invert两组，先逐项对照位时钟极性。下一轮命令和判据见本文末尾；每轮只改变一个参数，不按峰值大小选设置。
+终止前最后一项为baseline/clock-invert位时钟极性对照：工具和流程验证完成，未取得B组用户人声试听结果。命令与判据保留作历史；后续分支已取消。
 
 这是基于官方配置/API的临时诊断，尚无官方完整U9录音应用可直接复现。官方源码查证与mic-record-03数据见 [audio-official-review.md](audio-official-review.md)。它不属于生产MSH测试，不增加hmi_test命令，也不修改src/hal_entry.c。
 
@@ -99,11 +101,11 @@ SSI极性等参数是离散选项，没有连续数值上的单调关系。本�
 | 对照组 | 设置 | 接收SSICR | 状态 |
 | --- | --- | --- | --- |
 | A：baseline | BCKP=0，上升沿采样 | 442B4201 | 用户mic-fifo-01反馈只有沙沙声 |
-| B：clock-invert | BCKP=1，下降沿采样 | 442B6201 | 流程验证完成，待用户录人声 |
+| B：clock-invert | BCKP=1，下降沿采样 | 442B6201 | 流程验证完成；未取得用户人声结果，已终止 |
 
 主机新参数为--variant，默认baseline；只有显式选择clock-invert时才编译BCKP翻转。报告新增修改前SSICR、变更掩码和组名，主机除去启动接收必需的REN/ROIEN两位后，要求改动严格为0x2000；错误组名、漏改、多改DEL/分频/WS极性或在已启用收发时设置均拒绝。每轮保存独立编号，结束复位恢复原Flash应用。
 
-现在执行B组：
+终止前提供的B组命令（不再要求执行）：
 
 ```powershell
 python scripts/audio_fifo_to_mp3.py --run --variant clock-invert --output logs/mic-clock-invert-01
