@@ -56,10 +56,6 @@ CFSR=00000000 HFSR=00000000
 
 ![MIC/U9 与 J8 的位置](../docs/picture/microphone-location.png)
 
-确认孔无遮挡后，对准该孔约 2～3cm 正常说话，进行一次定向录音。用新输出编号避免覆盖旧数据；看到 MIC RECORD NOW 后持续说“一二三四五，麦克风测试”，直到 MIC RECORD DONE，再试听 MP3。该轮明确改变的是拾音位置与距离，固件与信号处理不变：
+后续用户已完成mic-record-03，仍只有沙沙声，并明确反对以2～3cm作为验收条件。已取消近距离录音前提，按正常说话距离录不到人声继续排查。位置图作为器件识别参考，不作为要求用户重复贴近录音的依据。
 
-```powershell
-python scripts/audio_record_to_mp3.py --port COM8 --output logs/mic-record-03
-```
-
-如果仍只有沙沙声，保存该轮文件及实际 MIC 区域照片，再核对实物拾音孔和板卡版本；后续需要电压测量或已知正常的器件/板卡交叉对照，现有数字采样不能代替这些检查。
+官方源码对照见 [audio-official-review.md](audio-official-review.md)。下一项为 [CPU直读FIFO对照](audio-fifo.md)，以完整5秒全速PCM16绕过DTC、线程队列、滤波和降采样，检查自写连续采集流程。供电、声学器件及完整时序仍未验收，现有数字采样不能代替这些检查。

@@ -1,10 +1,12 @@
 # 独立麦克风录音与 MP3：audio-record
 
+最新实物结果：mic-record-03 完整导出 CRC=8F04B421、WAV字节匹配，用户反馈仍只有沙沙声。已逐项核对官方 BSP 与瑞萨 SSI 示例，详情见 [audio-official-review.md](audio-official-review.md)；人声仍未验收，没有确认具体根因。
+
 日期：2026-10-07。目的：把麦克风采集到的连续声音交给电脑试听，先判断是否录到了清晰人声，再排查板端回放。样本变化、峰值变大、接收计数完整都不能代替人声验收。
 
-2026-10-07 用户要求暂停，次日继续；续调先阅读 [audio-debug-handoff.md](audio-debug-handoff.md)，其中汇总最新证据和未执行完的定向录音步骤。
+2026-10-07 曾按用户要求暂停，随后恢复调试；证据汇总见 [audio-debug-handoff.md](audio-debug-handoff.md)。现已取消2～3cm定向录音前提，下一项为 [CPU直读FIFO对照](audio-fifo.md)。
 
-后续数字信号诊断见 [audio-wire-check.md](audio-wire-check.md)：用户没有逻辑分析仪、示波器或万用表，已用开发板自身采样 SCK/WS/SD，在生产 WS 配置下独立解码出 10 个左声道样本，与 SSI FIFO 10/10 逐字匹配。该短快照不证明录到了人声；下一步确认 MIC/U9 实际拾音孔无遮挡，并对准该孔定向录音，固件保持当前版本。
+后续数字信号诊断见 [audio-wire-check.md](audio-wire-check.md)：用户没有逻辑分析仪、示波器或万用表，已用开发板自身采样 SCK/WS/SD，在生产 WS 配置下独立解码出 10 个左声道样本，与 SSI FIFO 10/10 逐字匹配。该短快照不证明录到了人声，也未覆盖5秒DTC录音；后续以CPU直读FIFO对照继续排查。
 
 ## 文件与独立性
 

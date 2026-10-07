@@ -2,9 +2,13 @@
 
 更新日期：2026-10-07。用于记录验收过程中暂缓的事项；完整测试范围与已有证据见 `peripheral-test-taskbook.md` 和 `peripheral-test-results.md`。
 
-2026-10-07 按用户要求暂停音频调试，计划 2026-10-08 继续。当前证据、验收边界和明天的第一步集中在 [audio-debug-handoff.md](audio-debug-handoff.md)。定向拾音孔录音尚未收到日志或试听结果。
+2026-10-07 曾按用户要求暂停音频调试，随后恢复；证据与续调入口见 [audio-debug-handoff.md](audio-debug-handoff.md)。
+
+用户提供 mic-record-03：完整导出 CRC=8F04B421、WAV字节匹配，仍只有沙沙声。已完成官方BSP/上游源码及瑞萨SSI示例对照，没有确认可直接修复的驱动或配置差异；最新进展见 [audio-official-review.md](audio-official-review.md)。用户反对2～3cm验收前提，已取消；下一项为正常说话距离下的 [CPU直读FIFO对照](audio-fifo.md)。
 
 ## 音频输出：歌曲验收通过，录音回放恢复排查
+
+- [ ] CPU直读SSI FIFO对照：临时诊断流程已在实物完成5秒全速PCM16，帧数/SSISR/WAV字节检查通过，退出复位原固件。待用户正常距离说话并试听 `logs/mic-fifo-01.mp3`，根据人声内容判断是否回查生产采集流程；操作见 [audio-fifo.md](audio-fifo.md)。
 
 2026-10-06 用户确认 J8 已连接 JBL 4Ω、标识 C11R 的喇叭。已执行低幅提示音：8000/8000 样本，509 ms，WAIT/IDLE；用户确认“听到了，声音正常”，低幅提示音验收通过，旧版录音回放虽板端完成（8192/8192，1057 ms），用户自行复测反馈“没有听到自己的声音”。已改进倒计时、录音窗口、停声间隔及幅度处理。用户随后暂停录音回放，改为先验收新增歌曲播放例程。
 
@@ -14,7 +18,7 @@
 - [x] `hmi_test audio-tone`：8000/8000 样本，509 ms，用户确认有声且正常，低幅提示音验收通过。
 - [x] `hmi_test audio-song`：用户确认“声音连续、正常”，195729/195729、pwm_error=0，12258ms 后 WAIT/IDLE，默认歌曲播放验收通过；日志见 `audio-song.md` 和 `peripheral-test-results.md`。
 - [ ] `hmi_test audio-replay`：v7已完整录5秒/播5秒、overrun=0，用户持续说话仍只有沙沙声。语音未验收，优先核验稳定阶段的原始采集内容与麦克风/I2S输入；后续已按用户授权新增独立`audio-raw`，两轮原始WAV/波形已对照，CRC和采集完整，但100～8000Hz幅度仅增加0.215dB；后续mic-tone轮用户确认未播放参考音，不能视为受控测试；按用户最新要求新增audio-record完整语音录音→电脑MP3试听，先判断人声是否正常，不要求外部参考音；之后依据实际录音排查U9/SSI输入；操作见`audio-raw.md`，此前分析见`audio-replay-v7-analysis.md`。
-- [ ] `hmi_test audio-record`：新例程已构建/烧录；用户mic-record-02完整5秒PCM导出和MP3生成通过，CRC=8B437AD7、无溢出/限幅，持续说话但电脑MP3只有沙沙声，人声未通过。后续用SWD临时采样SCK/WS/SD，生产WS配置下SD独立解码与SSI FIFO左声道10/10逐字匹配；已复位原固件，不打开COM8。用户没有逻辑分析仪、示波器或万用表，下一步确认MIC/U9拾音孔无遮挡并定向录音，供电/器件仍未验证；结果与位置图见`audio-wire-check.md`，录音操作见`audio-record.md`。
+- [ ] `hmi_test audio-record`：新例程已构建/烧录；用户mic-record-02完整5秒PCM导出和MP3生成通过，CRC=8B437AD7、无溢出/限幅，持续说话但电脑MP3只有沙沙声，人声未通过。后续用SWD临时采样SCK/WS/SD，生产WS配置下SD独立解码与SSI FIFO左声道10/10逐字匹配；已复位原固件，不打开COM8。用户没有逻辑分析仪、示波器或万用表，已取消2～3cm录音前提，下一项CPU直读FIFO对照；供电/器件仍未验证；结果与位置图见`audio-wire-check.md`，录音操作见`audio-record.md`。
 - [x] 将提示音与歌曲日志、人工试听结论补入 `peripheral-test-results.md`；录音回放已恢复排查，继续保留未验收状态。
 
 接口位置、针脚和电路依据见 `peripheral-tests.md` 的音频章节。麦克风采样及基本安静/发声对照已完成；低幅扬声器提示音和默认歌曲已通过人工试听，录音回放诊断版待用户复测。

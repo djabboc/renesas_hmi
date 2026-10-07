@@ -1,6 +1,10 @@
 # 独立 MVP 重构回归（2026-10-01）
 
-2026-10-07麦克风数字信号交叉核对：用户无逻辑分析仪、示波器或万用表。SWD临时SRAM程序同步采样P403/SCK、P404/WS、P406/SD；最终2000点/24008 CPU周期，WS半周期104点、每时隙32个SCK。用与生产相同的WS_CONTINUE_OFF复核，SD按I²S独立解码的10个左声道样本与SSI FIFO逐字一致，右声道为零、SSISR=0；退出复位回原Flash固件，不打开COM8。该短快照未配合发声、不覆盖完整5秒DTC录音，不宣布声学验收通过。下一步确认MIC/U9实际拾音孔无遮挡并定向录音；供电和器件仍未验证，详细证据及位置图见[audio-wire-check.md](audio-wire-check.md)。
+2026-10-07新增CPU直读FIFO录音对照：保留官方时钟与SSI格式，绕过DTC/RT-Thread/滤波/降采样；正常距离说话为验收条件，取消2～3cm前提。mic-fifo-flow-04实物流程完成240384保存样本/4.999967秒，SSISR=0，CRC=E6FE4B1A，两段PCM与WAV整段匹配；4项主机检查通过，退出复位原Flash固件，不打开COM8。本轮未安排用户同步说话，不能据此宣布人声采集通过；等待用户运行新命令，见[audio-fifo.md](audio-fifo.md)。
+
+2026-10-07 mic-record-03：288384帧/5998ms、751块，完整保存40064样本/80128字节；CRC=8F04B421、WAV与串口导出逐字节一致，read/overrun/early_idle/stop/限幅全0，处理最大1514µs，29658ms后WAIT/IDLE。用户反馈仍只有沙沙声，人声未通过。已对照官方BSP1.2.0及官方上游9463e9d：SSI/GPT/DTC驱动、编译配置、系统时钟和引脚8个完整文件一致，GPT1/SSI0/DTC10生成段一致；该官方HMI版本未找到U9完整录音应用，瑞萨另有SSI回环示例。详细证据见[audio-official-review.md](audio-official-review.md)，本次未改固件或打开COM8，不把官方配置一致当作整条录音链路通过。
+
+2026-10-07麦克风数字信号交叉核对：用户无逻辑分析仪、示波器或万用表。SWD临时SRAM程序同步采样P403/SCK、P404/WS、P406/SD；最终2000点/24008 CPU周期，WS半周期104点、每时隙32个SCK。用与生产相同的WS_CONTINUE_OFF复核，SD按I²S独立解码的10个左声道样本与SSI FIFO逐字一致，右声道为零、SSISR=0；退出复位回原Flash固件，不打开COM8。该短快照未配合发声、不覆盖完整5秒DTC录音，不宣布声学验收通过。后续已取消2～3cm录音前提，下一项CPU直读FIFO对照；供电和器件仍未验证，详细证据及位置图见[audio-wire-check.md](audio-wire-check.md)。
 
 2026-10-07 audio-record首轮实物导出：用户mic-record-02录音288384帧/5998ms，保存40064帧/约5秒，overrun=0、storage_clipped=0、CRC=8B437AD7，WAV数据区与完整打印一致，MP3已生成；处理最大1512µs，29659ms后WAIT/IDLE。用户随后确认持续说话但电脑MP3只有沙沙声，麦克风语音采集未通过。首次COM8拒绝访问留下空日志的脚本问题已修复，12项主机检查通过，详情和控制日志见audio-record.md。
 
