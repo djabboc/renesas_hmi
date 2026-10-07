@@ -2,9 +2,10 @@
 
 只构建：python scripts/audio_fifo_to_mp3.py --build-only
 用户采集：python scripts/audio_fifo_to_mp3.py --run --output logs/mic-fifo-01
+极性对照：python scripts/audio_fifo_to_mp3.py --run --variant clock-invert --output logs/mic-clock-invert-01
 
 采集会暂停、覆盖原应用RAM，结束或异常时复位回Flash固件。
-它保留官方时钟和SSI格式，绕过DTC、RT-Thread队列及板端滤波。
+默认保留官方时钟和SSI格式；对照组仅翻转BCKP，绕过DTC、队列及板端滤波。
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ RATE = 48077
 TEXT_ADDRESS = 0x20078000
 DATA_ADDRESS = 0x2007A000
 RAM_END = 0x20080000
+VARIANTS = {"baseline": 0, "clock-invert": 0x2000}
 SYMBOL_NAMES = (
     "R_GPT_Open", "R_GPT_Start", "R_SSI_Open", "R_SSI_Read", "R_IOPORT_PinCfg",
     "g_ioport_ctrl", "g_bsp_pin_cfg", "g_timer_cfg", "g_timer_ctrl", "g_i2s0_cfg", "g_i2s0_ctrl",
@@ -67,13 +69,16 @@ def expected_symbol_bytes(name: str, symbols, segments) -> tuple[int, bytes]:
     raise ValueError(f"Flash符号未包含完整数据：{name}")
 
 
-def build(output: Path, compiler: Path):
+def build(output: Path, compiler: Path, variant: str = "baseline"):
+    if variant not in VARIANTS:
+        raise ValueError("不支持的SSI对照组")
     flash_symbols, flash_segments = read_elf(ROOT / "Debug/rtthread.elf")
     includes = re.findall(r'-I"([^\"]+)"',
                           (ROOT / "Debug/src/test/subdir.mk").read_text(errors="replace"))
     elf_path = output / "fifo.elf"
     arguments = [str(compiler), "-mcpu=cortex-m4", "-mthumb", "-mfloat-abi=hard",
                  "-mfpu=fpv4-sp-d16", "-O2", "-Wall", "-Wextra", "-nostartfiles", "-std=gnu11"]
+    arguments.append("-DFIFO_INVERT_BCKP=" + str(int(variant == "clock-invert")))
     arguments.extend("-I" + path for path in includes)
     arguments.extend(["-include", str(ROOT / "rtconfig_preinc.h"),
                       f"-Wl,-n,-Ttext={TEXT_ADDRESS:#x},-Tdata={DATA_ADDRESS:#x},-e,capture_fifo"])
@@ -106,7 +111,7 @@ def run_commander(pyocd: Path, commands: Path, timeout: int = 30):
     return result
 
 
-def validate_report(payload: bytes) -> dict:
+def validate_report(payload: bytes, variant: str = "baseline") -> dict:
     if len(payload) != 96:
         raise ValueError("FIFO报告不完整")
     words = struct.unpack("<24I", payload)
@@ -120,12 +125,20 @@ def validate_report(payload: bytes) -> dict:
     duration = record_cycles / 120000000
     if not 4.99 < duration < 5.01:
         raise ValueError(f"FIFO录音时长异常：{duration:.6f}s")
+    # Read正常启用REN/ROIEN。除此之外，必须仅改变所选对照位。
+    changed_bits = (words[9] ^ words[21]) & ~0x04000001
+    if words[22] != VARIANTS[variant] or changed_bits != VARIANTS[variant]:
+        raise ValueError("实际SSI设置不符合所选对照组；拒绝错误标记音频")
+    if words[21] & 3 or not words[9] & 1:
+        raise ValueError("SSI对照没有在关闭收发时设置，或没有启用接收")
     minimum, maximum = struct.unpack("<ii", payload[64:72])
     return {"source": "CPU reads SSI FIFO; DTC and application queue bypassed",
             "source_frames": words[14], "saved_frames": words[15],
             "capture_duration_seconds": duration, "left24_minimum": minimum,
             "left24_maximum": maximum, "right24_peak": words[19],
-            "ssicr": f"{words[9]:08X}", "ssiofr": f"{words[10]:08X}", "ssisr": f"{words[20]:08X}"}
+            "ssicr": f"{words[9]:08X}", "ssiofr": f"{words[10]:08X}", "ssisr": f"{words[20]:08X}",
+            "variant": variant, "ssicr_before": f"{words[21]:08X}",
+            "changed_setup_bits": f"{changed_bits:08X}"}
 
 
 def save_audio(prefix: Path, pcm: bytes, report: dict, ffmpeg: Path) -> None:
@@ -156,6 +169,8 @@ def main() -> int:
     mode.add_argument("--build-only", action="store_true")
     mode.add_argument("--run", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--variant", choices=VARIANTS, default="baseline",
+                        help="baseline=官方极性；clock-invert=只翻转BCKP")
     args = parser.parse_args()
     studio = Path(os.environ.get("RTTHREAD_STUDIO", "C:/RT-ThreadStudio"))
     compiler = find_studio_tool(studio, "repo/Extract/ToolChain_Support_Packages/ARM/*/10.2.1/bin/arm-none-eabi-gcc.exe", "ARM GCC")
@@ -166,8 +181,8 @@ def main() -> int:
     if args.run and (work.exists() or any(prefix.parent.glob(prefix.name + ".*"))):
         raise ValueError("输出前缀已存在，请换一个编号")
     work.mkdir(parents=True, exist_ok=True)
-    elf_path, symbols, initialization, flash_symbols, flash_segments = build(work, compiler)
-    print("FIFO diagnostic built; Flash firmware unchanged.", flush=True)
+    elf_path, symbols, initialization, flash_symbols, flash_segments = build(work, compiler, args.variant)
+    print(f"FIFO diagnostic built: variant={args.variant}; Flash firmware unchanged.", flush=True)
     if args.build_only:
         return 0
     ffmpeg = find_ffmpeg(None)
@@ -205,7 +220,7 @@ def main() -> int:
             ""]), encoding="utf-8")
         print("即将采集：请以正常距离持续说话，直到采集完成提示。约3秒预热、保存后5秒。", flush=True)
         run_commander(pyocd, commands, timeout=25)
-        report = validate_report(report_file.read_bytes())
+        report = validate_report(report_file.read_bytes(), args.variant)
         print("采集完成，可以停止说话；正在通过SWD导出已保存的5秒音频。", flush=True)
         export = work / "export.txt"
         export.write_text("\n".join([

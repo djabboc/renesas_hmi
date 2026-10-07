@@ -19,6 +19,11 @@
 #define REPORT_MAGIC 0x4649464Fu
 #define REPORT_DONE 0x444F4E45u
 
+/* 默认沿用官方极性；主机只有显式选择clock-invert时才编译另一组。 */
+#ifndef FIFO_INVERT_BCKP
+#define FIFO_INVERT_BCKP 0
+#endif
+
 /* 主机读取这个固定格式报告，只有完整采集、无错误时才生成音频。 */
 volatile uint32_t fifo_report[24] = {REPORT_MAGIC};
 
@@ -79,8 +84,8 @@ void capture_fifo(void)
         goto finish;
     }
 
-    /* 时钟、PCM24、32位时隙和WS设置均保留官方配置。
-     * 唯一取消的接收子驱动是DTC；CPU随后直接排空FIFO。 */
+    /* 时钟、PCM24、32位时隙和WS设置先沿用官方配置。
+     * 取消DTC接收子驱动；CPU随后直接排空FIFO。 */
     microphone_config.p_transfer_rx = NULL;
     microphone_config.p_callback = unused_callback;
     fifo_report[5] = R_GPT_Open(&g_timer_ctrl, &timer_config);
@@ -100,6 +105,23 @@ void capture_fifo(void)
         goto finish;
     }
     ssi_opened = 1;
+
+    /* Open已经配置SSI，但还没有启用接收/发送。
+     * 手册禁止在IIRQ=0的通信状态修改BCKP，必须先确认空闲。
+     * 对照组仅翻转位时钟极性，频率和数据格式保持一致。
+     * 报告保存修改前值及改动掩码，主机必须核对实际寄存器。 */
+    fifo_report[21] = R_SSI0->SSICR;
+    if ((fifo_report[21] & 3u) != 0 || R_SSI0->SSISR_b.IIRQ == 0)
+    {
+        fifo_report[8] = FSP_ERR_IN_USE;
+        goto finish;
+    }
+#if FIFO_INVERT_BCKP
+    R_SSI0->SSICR = fifo_report[21] ^ R_SSI0_SSICR_BCKP_Msk;
+    fifo_report[22] = R_SSI0_SSICR_BCKP_Msk;
+#else
+    fifo_report[22] = 0;
+#endif
     fifo_report[8] = R_SSI_Read(&g_i2s0_ctrl, unused_receive_buffer,
                               sizeof(unused_receive_buffer));
     if (fifo_report[8] != FSP_SUCCESS)

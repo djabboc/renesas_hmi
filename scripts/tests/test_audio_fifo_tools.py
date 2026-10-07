@@ -15,6 +15,8 @@ def complete_report() -> bytes:
     words = [0] * 24
     words[0] = 0x4649464F
     words[1] = 3
+    words[9] = 0x442B4201
+    words[21] = 0x402B4200
     # 起始值接近DWT回绕；主机应按无符号32位差值计算时长。
     words[12] = 0xF0000000
     words[13] = (words[12] + 600000000) & 0xFFFFFFFF
@@ -64,6 +66,33 @@ class FifoToolsTests(unittest.TestCase):
                 self.assertEqual(wav.readframes(fifo.FRAMES), pcm)
             with self.assertRaises(ValueError):
                 fifo.save_audio(prefix, pcm[:-2], {}, Path("unused"))
+
+    def test_polarity_variant_matches_actual_setup_and_rejects_wrong_label(self):
+        words = list(struct.unpack("<24I", complete_report()))
+        words[9] ^= 0x2000
+        words[22] = 0x2000
+        payload = struct.pack("<24I", *words)
+        report = fifo.validate_report(payload, "clock-invert")
+        self.assertEqual(report["variant"], "clock-invert")
+        self.assertEqual(report["changed_setup_bits"], "00002000")
+        with self.assertRaises(ValueError):
+            fifo.validate_report(payload, "baseline")
+        with self.assertRaises(ValueError):
+            fifo.validate_report(complete_report(), "clock-invert")
+        # 不能把极性与延迟/分频同时改动的录音标为单变量对照。
+        for extra_bit in (0x100, 0x10, 0x1000):
+            with self.subTest(extra_bit=extra_bit):
+                changed = words.copy()
+                changed[9] ^= extra_bit
+                with self.assertRaises(ValueError):
+                    fifo.validate_report(struct.pack("<24I", *changed), "clock-invert")
+
+    def test_rejects_setup_while_receiver_enabled_or_missing_receive_enable(self):
+        for index in (9, 21):
+            words = list(struct.unpack("<24I", complete_report()))
+            words[index] ^= 1
+            with self.assertRaises(ValueError):
+                fifo.validate_report(struct.pack("<24I", *words))
 
 
 if __name__ == "__main__":

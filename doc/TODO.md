@@ -8,6 +8,8 @@
 
 ## 音频输出：歌曲验收通过，录音回放恢复排查
 
+- [ ] 按用户要求进行BCKP单变量A/B：A组官方极性已失败，B组clock-invert工具和板端流程已验证；待用户执行 `python scripts/audio_fifo_to_mp3.py --run --variant clock-invert --output logs/mic-clock-invert-01` 并试听。只有辨认人声且复测改善可重复，才修改生产例程；操作与寄存器判据见 [audio-fifo.md](audio-fifo.md)。
+
 - [ ] CPU直读SSI FIFO对照：用户mic-fifo-01反馈仍只有沙沙声。完整保存240384帧、SSISR=0、CRC=5B597EDC，WAV与SWD整段匹配，试听增益213.15倍；退出复位原固件。绕过DTC/队列/滤波/降采样后仍未录到可辨认人声，重点转向U9输出及SSI接收条件，尚未确定具体根因；证据见 [audio-fifo.md](audio-fifo.md)。
 
 2026-10-06 用户确认 J8 已连接 JBL 4Ω、标识 C11R 的喇叭。已执行低幅提示音：8000/8000 样本，509 ms，WAIT/IDLE；用户确认“听到了，声音正常”，低幅提示音验收通过，旧版录音回放虽板端完成（8192/8192，1057 ms），用户自行复测反馈“没有听到自己的声音”。已改进倒计时、录音窗口、停声间隔及幅度处理。用户随后暂停录音回放，改为先验收新增歌曲播放例程。

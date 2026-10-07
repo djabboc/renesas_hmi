@@ -1,5 +1,7 @@
 # 独立 MVP 重构回归（2026-10-01）
 
+2026-10-07用户要求“二分法调整”：新增SSI位时钟极性A/B对照，baseline BCKP=0与clock-invert BCKP=1，其他采集参数一致；修改前要求REN/TEN=0、IIRQ=1，主机核验仅改BCKP（掩码2000）。6项主机检查、两组编译通过；B组板端流程完整5秒/240384帧，SSICR=442B6201、SSISR=0、CRC=43D5011D，WAV与SWD整段匹配并复位原固件。未安排同步发声，等待用户B组录音试听，尚未确认修复；详情见[audio-fifo.md](audio-fifo.md)。
+
 2026-10-07用户mic-fifo-01试听仍只有沙沙声：CPU直读FIFO完整保存240384帧/4.999967秒，SSISR/CFSR/HFSR=0，右PCM24峰值0，CRC=5B597EDC；原样WAV与两段SWD导出整段匹配。PCM16交流RMS=13.314，试听固定增益213.15倍会同时放大底噪。DTC/队列/滤波/降采样已绕过，语音仍未通过；排查重点为U9输出及SSI接收条件，不能据此确定器件损坏。本轮只读分析并归档，未改代码、未操作板卡；详见[audio-fifo.md](audio-fifo.md)。
 
 2026-10-07新增CPU直读FIFO录音对照：保留官方时钟与SSI格式，绕过DTC/RT-Thread/滤波/降采样；正常距离说话为验收条件，取消2～3cm前提。mic-fifo-flow-04实物流程完成240384保存样本/4.999967秒，SSISR=0，CRC=E6FE4B1A，两段PCM与WAV整段匹配；4项主机检查通过，退出复位原Flash固件，不打开COM8。本轮未安排用户同步说话，不能据此宣布人声采集通过；等待用户运行新命令，见[audio-fifo.md](audio-fifo.md)。
