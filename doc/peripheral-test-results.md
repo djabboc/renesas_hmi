@@ -1,5 +1,7 @@
 # 独立 MVP 重构回归（2026-10-01）
 
+2026-10-07用户mic-fifo-01试听仍只有沙沙声：CPU直读FIFO完整保存240384帧/4.999967秒，SSISR/CFSR/HFSR=0，右PCM24峰值0，CRC=5B597EDC；原样WAV与两段SWD导出整段匹配。PCM16交流RMS=13.314，试听固定增益213.15倍会同时放大底噪。DTC/队列/滤波/降采样已绕过，语音仍未通过；排查重点为U9输出及SSI接收条件，不能据此确定器件损坏。本轮只读分析并归档，未改代码、未操作板卡；详见[audio-fifo.md](audio-fifo.md)。
+
 2026-10-07新增CPU直读FIFO录音对照：保留官方时钟与SSI格式，绕过DTC/RT-Thread/滤波/降采样；正常距离说话为验收条件，取消2～3cm前提。mic-fifo-flow-04实物流程完成240384保存样本/4.999967秒，SSISR=0，CRC=E6FE4B1A，两段PCM与WAV整段匹配；4项主机检查通过，退出复位原Flash固件，不打开COM8。本轮未安排用户同步说话，不能据此宣布人声采集通过；等待用户运行新命令，见[audio-fifo.md](audio-fifo.md)。
 
 2026-10-07 mic-record-03：288384帧/5998ms、751块，完整保存40064样本/80128字节；CRC=8F04B421、WAV与串口导出逐字节一致，read/overrun/early_idle/stop/限幅全0，处理最大1514µs，29658ms后WAIT/IDLE。用户反馈仍只有沙沙声，人声未通过。已对照官方BSP1.2.0及官方上游9463e9d：SSI/GPT/DTC驱动、编译配置、系统时钟和引脚8个完整文件一致，GPT1/SSI0/DTC10生成段一致；该官方HMI版本未找到U9完整录音应用，瑞萨另有SSI回环示例。详细证据见[audio-official-review.md](audio-official-review.md)，本次未改固件或打开COM8，不把官方配置一致当作整条录音链路通过。

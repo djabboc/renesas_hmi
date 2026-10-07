@@ -1,5 +1,7 @@
 # 音频调试总结与续调入口
 
+最新结果：用户mic-fifo-01直接FIFO录音仍只有沙沙声，完整帧数、SSI状态、WAV字节检查通过，CRC=5B597EDC。DTC/队列/滤波/降采样绕过后人声仍未通过，排查重点转向U9输出及SSI接收条件；具体根因未确定，详见 [audio-fifo.md](audio-fifo.md) 最后一节。下文CPU对照操作保留作方法记录，不要求重复同一轮测试。
+
 后续更新：用户已恢复调试并完成 mic-record-03，完整导出但仍为沙沙声。最新官方源码对照和实物结果见 [audio-official-review.md](audio-official-review.md)，下一项为 [CPU直读FIFO对照](audio-fifo.md)。不再把2～3cm作为录音前提。
 
 整理日期：2026-10-07。本文最初按用户暂停要求整理，现已恢复调试并更新续调步骤。当前麦克风语音采集和录音回放尚未验收；SWD临时诊断退出时复位回原 Flash 固件，助手不打开 COM8。
